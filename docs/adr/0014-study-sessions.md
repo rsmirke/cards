@@ -64,7 +64,7 @@ Cards can be written (ADR 0013) and reviews can be recorded and scheduled (ADR 0
 ## Consequences
 
 - `max_reviews_per_day`, undoing a grade (Ctrl+Z, `undoes`) and card actions during review (SPEC §4.5) are not done yet. Undo must later be taken into account when counting "first review today": an undone first answer should not use the budget.
-- The deck list's "N new" still counts all new cards, not today's allowance. The deck page's subtitle shows the allowance.
+- The deck list's "N new" still counts all new cards, not today's allowance. The deck page's subtitle shows the allowance. (Fixed later: `list_decks(now, day_start)` counts each deck with `study_input`'s own rules, so the deck list's new and due counts equal the deck page's.)
 - The deck page's subtitle is not refreshed by time alone. A card that becomes due while the page is open shows up after the next change or return.
 - A card that cannot be read during a session is skipped, with a toast, and not counted.
 - "N left" counts the card on screen and step cards that will come back, so it can go up after a Fail.
