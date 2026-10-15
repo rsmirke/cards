@@ -18,11 +18,12 @@ Dependency direction: `cards` → `cards-core`, never the reverse. `cards-core` 
 - `src/lib.rs`: the app name and ID constants and `is_valid_app_id`; re-exports `Error` and `Result`.
 - `src/error.rs`: the crate-wide `Error` enum (`thiserror`) and `Result` alias.
 - `src/data_dir.rs`: `resolve_data_dir` (pure; takes a `DataDirEnv` and a `BuildProfile`) and `ensure_data_dir` (creates a directory with mode `0700`). Debug builds refuse the release directory. See ADR 0004.
-- `src/time.rs`: `now_ms` (UTC milliseconds) and `utc_parts` (calendar fields from milliseconds).
+- `src/time.rs`: `now_ms` (UTC milliseconds), `utc_parts` (calendar fields from milliseconds) and its inverse `utc_ms`.
 - `src/storage/`: SQLite storage (ADR 0005).
   - `mod.rs`: `Store::open(data_dir)` opens `<data_dir>/cards.sqlite3`. It checks integrity, sets WAL/FK, backs up and migrates.
   - `migrations/`: `MIGRATIONS` (numbered `NNNN_*.sql` files embedded with `include_str!`) and `migrate`. Merged migrations are hash-pinned by a test.
-  - `backup.rs`: online-backup copies into `<data_dir>/backups/` (keeps 14).
+  - `backup.rs`: online-backup copies into `<data_dir>/backups/` (keeps 14), and the public `list_backups` (newest first, as `BackupInfo`).
+  - `restore.rs`: `restore_backup` validates a copy of a backup, moves the current database and its sidecar files aside to `cards.sqlite3.replaced-…`, installs the copy and opens it with `Store::open` (ADR 0006). `Store::open` refuses to start an empty database when the main file is missing but a `-wal`/`-journal` (`OrphanedSidecar`) or an interrupted restore's copy (`InterruptedRestore`) is there.
   - `tests.rs`: store-level tests.
 
   The schema is in `migrations/0001_initial.sql`.

@@ -24,6 +24,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   - Damaged, too-new and non-Cards database files are refused before anything is written to them.
   - Files are created with mode `0600`, directories with `0700`.
 - Dependencies: `rusqlite` with bundled SQLite (storage), `tracing` in `cards-core` (logging migrations and backups).
+- Backup restore in `cards-core` (ADR 0006), no UI yet:
+  - `list_backups`: the backups, newest first, with time and size.
+  - `restore_backup`: validates the backup (integrity, version, exact schema) before changing anything. Moves the current database with its `-wal`/`-shm` aside to `cards.sqlite3.replaced-<timestamp>` instead of deleting it. Installs the backup atomically and opens it, migrating it if it is older. Works when the current database is damaged.
+  - `Store::open` refuses to start an empty database when the database file is missing but its `-wal`/`-journal`, or an interrupted restore's copy, is still there.
+- README: "Recovering your data".
 
 ### Changed
 - SPEC §3: ids are TEXT UUIDv7, `cards.seq` is the FTS5 rowid, and card deletion will be a soft delete.
