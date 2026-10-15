@@ -61,6 +61,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   - Delete removes the deck at once and offers Undo in a toast.
   - Icon-only buttons have tooltips and accessible labels; the row menu's label names the deck.
 - `Store::undelete_deck` in `cards-core`: restores a deleted deck and exactly the cards deleted with it; refuses, changing nothing, if a live deck took its name meanwhile.
+- Deck page (ADR 0013):
+  - Clicking a deck opens its page, titled with the deck name, with Back, swipe and Alt+← to return. The deck list's counts update on return.
+  - The cards are listed by their front on one ellipsised line, in a list view that stays smooth with thousands of cards. With no cards, the empty state has an "Add Card" button.
+  - Card editor with plain-text front and back: Ctrl+Enter saves, Ctrl+Shift+Enter saves and starts a new card in the same deck, a blank front disables saving, and closing with unsaved changes asks first.
+  - Activating a card edits it; its row menu has Edit and Delete. Delete offers Undo in a toast, which also works after going back to the deck list.
+  - Ctrl+N makes a new card on a deck page and a new deck on the deck list.
+- `Store::undelete_card` in `cards-core`: restores a deleted card with its history; refuses, changing nothing, while its deck is deleted.
+- `cards-core` example `fill_scratch_db`: fills a scratch data directory with 5,000 cards to try the card list.
 
 ### Changed
 - Without a usable data folder the app shows an error page instead of starting with a toast.

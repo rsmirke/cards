@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use cards_core::domain::Card;
 use cards_core::storage::Restored;
 use gtk::{gio, glib};
 
+use crate::pages::DeckPage;
 use crate::startup::Problem;
 use crate::state::{AppState, warning_message};
 
@@ -17,7 +19,7 @@ mod imp {
     use gtk::glib;
     use gtk::prelude::*;
 
-    use crate::pages::{DecksPage, RecoveryPage};
+    use crate::pages::{DeckPage, DecksPage, RecoveryPage};
     use crate::state::AppState;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
@@ -27,6 +29,8 @@ mod imp {
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
         pub stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub navigation_view: TemplateChild<adw::NavigationView>,
         #[template_child]
         pub decks_page: TemplateChild<DecksPage>,
         #[template_child]
@@ -55,9 +59,22 @@ mod imp {
             DecksPage::ensure_type();
             RecoveryPage::ensure_type();
             klass.bind_template();
-            // Ctrl+N (set in main.rs); enabled once the deck list is shown.
+            // Enabled once the deck list is shown.
             klass.install_action("win.new-deck", None, |window, _, _| {
                 window.imp().decks_page.new_deck();
+            });
+            // Ctrl+N (set in main.rs): a new card on a deck page, a new
+            // deck on the deck list.
+            klass.install_action("win.new", None, |window, _, _| {
+                let imp = window.imp();
+                match imp
+                    .navigation_view
+                    .visible_page()
+                    .and_downcast::<DeckPage>()
+                {
+                    Some(deck_page) => deck_page.new_card(),
+                    None => imp.decks_page.new_deck(),
+                }
             });
         }
 
@@ -70,6 +87,7 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             self.obj().action_set_enabled("win.new-deck", false);
+            self.obj().action_set_enabled("win.new", false);
         }
     }
     impl WidgetImpl for CardsWindow {}
@@ -134,6 +152,21 @@ impl CardsWindow {
         tracing::debug!("showing the main page");
         imp.stack.set_visible_child_name("main");
         self.action_set_enabled("win.new-deck", true);
+        self.action_set_enabled("win.new", true);
+    }
+
+    /// After an Undo from a toast brought `card` back: shows it on the
+    /// visible deck page if that is its deck, and updates the deck counts.
+    pub fn card_restored(&self, card: &Card) {
+        let imp = self.imp();
+        if let Some(page) = imp
+            .navigation_view
+            .visible_page()
+            .and_downcast::<DeckPage>()
+        {
+            page.restored(card);
+        }
+        imp.decks_page.refresh();
     }
 
     /// Shows the full-window page that explains `problem`.
