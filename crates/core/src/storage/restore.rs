@@ -97,6 +97,8 @@ pub fn restore_backup(
 /// - [`Error::InterruptedRestore`] if a validated copy from an interrupted
 ///   restore is waiting to be installed: that copy is the user's data, and
 ///   starting over would hide it. Nothing was changed.
+/// - [`Error::BackupsAvailable`] if `<data_dir>/backups/` holds backups:
+///   restore one instead. Nothing was changed.
 /// - IO errors while moving files, and any error from [`Store::open`]. If
 ///   the old files were already moved aside, they stay under their
 ///   `replaced-…` name.
@@ -110,6 +112,10 @@ fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> R
     let partial = restore_partial_path(data_dir);
     if exists(&partial)? {
         return Err(Error::InterruptedRestore(partial));
+    }
+    let backups = super::list_backups(data_dir)?.len();
+    if backups > 0 {
+        return Err(Error::BackupsAvailable(backups));
     }
     ensure_data_dir(data_dir)?;
     let db_path = data_dir.join(DB_FILE_NAME);

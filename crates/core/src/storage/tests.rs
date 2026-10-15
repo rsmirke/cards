@@ -1077,11 +1077,18 @@ fn a_reopened_file_store_keeps_ids_increasing_and_the_cache_exact() {
     };
 
     let mut store = Store::open(tmp.path()).unwrap();
+    // The clock went back across the restart: a fresh generator that did
+    // not observe the log would stamp this id before `first`'s.
     let second = store
-        .record_review(&card_a, Grade::Pass, Duration::from_secs(2), DAY0 + STEP)
+        .record_review(&card_b, Grade::Pass, Duration::from_secs(2), DAY0 - 1_000)
         .unwrap();
+    assert_eq!(
+        second.reviewed_at,
+        DAY0 - 1_000,
+        "another card: not floored"
+    );
     let third = store
-        .record_review(&card_b, Grade::Pass, Duration::from_secs(2), DAY0 + STEP)
+        .record_review(&card_a, Grade::Pass, Duration::from_secs(2), DAY0 + STEP)
         .unwrap();
 
     assert!(
@@ -1096,7 +1103,8 @@ fn a_reopened_file_store_keeps_ids_increasing_and_the_cache_exact() {
             scheduler.rebuild_state(card, &events).unwrap()
         );
     }
-    assert_eq!(store.review_events(&card_a).unwrap(), [first, second]);
+    assert_eq!(store.review_events(&card_a).unwrap(), [first, third]);
+    assert_eq!(store.review_events(&card_b).unwrap(), [second]);
 }
 
 fn scheduled_due(store: &Store) -> i64 {

@@ -104,7 +104,6 @@ impl RecoveryPage {
     ) {
         let imp = self.imp();
         imp.reason.set(Some(reason));
-        imp.status.set_title(reason.title());
         imp.path_label.set_label(&data_folder_line(&data_dir));
         imp.data_dir.replace(Some(data_dir));
         imp.on_restored
@@ -122,6 +121,11 @@ impl RecoveryPage {
         let Some(dir) = imp.data_dir.borrow().clone() else {
             return;
         };
+        // The reason can change after a failed restore or start; the title
+        // follows it.
+        if let Some(reason) = imp.reason.get() {
+            imp.status.set_title(reason.title());
+        }
         let mut description = imp
             .reason
             .get()
@@ -130,7 +134,7 @@ impl RecoveryPage {
             .to_owned();
         match AppState::list_backups(&dir) {
             Ok(backups) if backups.is_empty() => {
-                if offers_start_fresh(imp.reason.get(), true) {
+                if offers_start_fresh(imp.reason.get()) {
                     imp.start_fresh_button.set_visible(true);
                     description.push_str(
                         "\n\nNo backups were found, so there is nothing to restore. You can \
@@ -309,6 +313,12 @@ impl RecoveryPage {
                 "A restore did not finish. Its copy is kept; restore a backup to continue."
                     .to_owned()
             }
+            Ok(Err(cards_core::Error::BackupsAvailable(_))) => {
+                // A backup appeared since the list was shown; reloading
+                // lists it.
+                tracing::warn!("start fresh refused: backups exist");
+                "Backups were found. Restore one of them instead.".to_owned()
+            }
             Ok(Err(err)) => {
                 tracing::error!("start fresh failed: {err}");
                 format!("Starting fresh failed: {err}")
@@ -323,11 +333,12 @@ impl RecoveryPage {
     }
 }
 
-/// Whether the page offers Start Fresh: only when there is no backup to
-/// restore, and never while an interrupted restore's validated copy waits
-/// (that copy is the user's data; ADR 0016).
-fn offers_start_fresh(reason: Option<RecoveryReason>, no_backups: bool) -> bool {
-    no_backups && reason.is_some_and(|r| r != RecoveryReason::InterruptedRestore)
+/// Whether the page offers Start Fresh when there is no backup to restore:
+/// never while an interrupted restore's validated copy waits (that copy is
+/// the user's data; ADR 0016). With backups it is never offered, and core
+/// refuses it too.
+fn offers_start_fresh(reason: Option<RecoveryReason>) -> bool {
+    reason.is_some_and(|r| r != RecoveryReason::InterruptedRestore)
 }
 
 /// Local date and time of a backup, in the user's locale format.
@@ -342,21 +353,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn start_fresh_is_offered_only_without_backups() {
+    fn start_fresh_is_offered_for_every_reason_with_a_file_to_move() {
         for reason in [
             RecoveryReason::Damaged,
             RecoveryReason::NotCards,
             RecoveryReason::MissingFile,
         ] {
-            assert!(offers_start_fresh(Some(reason), true), "{reason:?}");
-            assert!(!offers_start_fresh(Some(reason), false), "{reason:?}");
+            assert!(offers_start_fresh(Some(reason)), "{reason:?}");
         }
     }
 
     #[test]
     fn start_fresh_never_hides_a_waiting_restore_copy() {
-        let interrupted = Some(RecoveryReason::InterruptedRestore);
-        assert!(!offers_start_fresh(interrupted, true));
-        assert!(!offers_start_fresh(None, true));
+        assert!(!offers_start_fresh(Some(
+            RecoveryReason::InterruptedRestore
+        )));
+        assert!(!offers_start_fresh(None));
     }
 }

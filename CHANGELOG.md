@@ -79,7 +79,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - `cards-core`: `Store::study_input` and the pure `scheduling::session` (queue, interleaving, session, summary).
 - `fill_scratch_db --due N`: makes N scratch cards due now, through the real scheduler, to try studying.
 
-- Recovery page with no backups: **Start Fresh**, after a confirmation, moves the database aside (never deleting it) and starts an empty one (ADR 0016, #16). Not offered while an interrupted restore's copy waits.
+- Recovery page with no backups: **Start Fresh**, after a confirmation, moves the database aside (never deleting it) and starts an empty one (ADR 0016, #16). Not offered, and refused by core, while backups exist (`Error::BackupsAvailable`) or an interrupted restore's copy waits.
 - `cards-core`: `storage::start_fresh` and `Store::next_study_change`.
 - Tests: the cache property test also adds, deletes and undeletes cards and decks; a file-backed store is reopened; a v2 backup is restored; migration 0005 moves the due date of a late Pass (#13).
 

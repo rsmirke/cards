@@ -805,6 +805,12 @@ fn leftover_partial_from_an_interrupted_restore_is_replaced() {
 
 // --- Starting fresh (ADR 0016) --------------------------------------------
 
+/// Deletes every backup, for the tests below: Start Fresh is only for a
+/// data folder with nothing to restore.
+fn without_backups(e: &Env) {
+    fs::remove_dir_all(e.backups()).unwrap();
+}
+
 impl Env {
     fn start_fresh(&self) -> Result<Restored> {
         start_fresh_with(&self.data, DAY0 + DAY_MS, MIGRATIONS)
@@ -825,6 +831,7 @@ fn start_fresh_moves_a_damaged_database_aside_unchanged() {
     let e = Env::new();
     let (store, _) = e.diverged();
     drop(store);
+    without_backups(&e);
     corrupt_btree(&e.db(), "decks");
     let damaged = fs::read(e.db()).unwrap();
 
@@ -859,6 +866,7 @@ fn start_fresh_moves_an_orphaned_wal_aside() {
     let e = Env::new();
     let (store, _) = e.diverged();
     let wal_bytes = crash_with_rows_in_wal(&e, store);
+    without_backups(&e);
     fs::remove_file(e.db()).unwrap();
     assert!(matches!(e.open(), Err(Error::OrphanedSidecar(_))));
 
@@ -909,4 +917,16 @@ fn start_fresh_without_any_database_just_creates_one() {
     let fresh = e.start_fresh().unwrap();
     assert_eq!(fresh.replaced, None);
     assert_fresh(&e, fresh);
+}
+
+#[test]
+fn start_fresh_is_refused_while_backups_exist() {
+    let e = Env::new();
+    let (store, _) = e.diverged();
+    drop(store);
+    corrupt_btree(&e.db(), "decks");
+    let before = snapshot(&e.data);
+
+    assert!(matches!(e.start_fresh(), Err(Error::BackupsAvailable(1))));
+    assert_eq!(snapshot(&e.data), before, "nothing changed");
 }

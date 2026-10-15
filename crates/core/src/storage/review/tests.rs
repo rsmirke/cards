@@ -729,6 +729,59 @@ mod next_change {
         );
     }
 
+    /// A card due exactly at `now` is offered already, so the next change
+    /// is a later one (`> now`, not `>= now`).
+    #[test]
+    fn a_card_due_exactly_now_is_not_the_next_change() {
+        let (mut store, deck, cards) = store_with_cards(2);
+        // An hour apart, so their due times differ.
+        for (card, start) in cards.iter().zip([T0, T0 + 3_600_000]) {
+            store
+                .record_review(card, Grade::Pass, Duration::ZERO, start)
+                .unwrap();
+            let step_due = due_at(&store, card);
+            store
+                .record_review(card, Grade::Pass, Duration::ZERO, step_due)
+                .unwrap();
+        }
+        let (a, b) = (due_at(&store, &cards[0]), due_at(&store, &cards[1]));
+        assert_ne!(a, b, "the fixture needs two different due times");
+        let (first, second) = (a.min(b), a.max(b));
+        assert_eq!(store.next_study_change(&deck, first).unwrap(), Some(second));
+        assert_eq!(store.next_study_change(&deck, second).unwrap(), None);
+    }
+
+    /// A review card failed goes to relearning: like a learning card, it
+    /// counts from 20 minutes before its step is due.
+    #[test]
+    fn a_relearning_card_counts_from_twenty_minutes_before_it_is_due() {
+        let (mut store, deck, cards) = store_with_cards(1);
+        let card = &cards[0];
+        store
+            .record_review(card, Grade::Pass, Duration::ZERO, T0)
+            .unwrap();
+        let step_due = due_at(&store, card);
+        store
+            .record_review(card, Grade::Pass, Duration::ZERO, step_due)
+            .unwrap();
+        let review_due = due_at(&store, card);
+        store
+            .record_review(card, Grade::Fail, Duration::ZERO, review_due)
+            .unwrap();
+        match store.card_state(card).unwrap() {
+            CardState::Scheduled(s) => assert_eq!(s.phase, crate::domain::Phase::Relearning),
+            CardState::New => panic!("expected a schedule"),
+        }
+        let due = due_at(&store, card);
+        let before = due - EARLY_MS - 1;
+        assert_eq!(
+            store.next_study_change(&deck, before).unwrap(),
+            Some(due - EARLY_MS)
+        );
+        let steps = |now| store.study_input(&deck, now, T0).unwrap().steps.len();
+        assert_eq!((steps(due - EARLY_MS - 1), steps(due - EARLY_MS)), (0, 1));
+    }
+
     #[test]
     fn a_missing_deck_is_reported() {
         let (store, _, _) = store_with_cards(1);
