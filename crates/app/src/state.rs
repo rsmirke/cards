@@ -11,6 +11,8 @@ use cards_core::domain::{Card, CardState, Deck, DeckSummary, Grade, ReviewEvent}
 use cards_core::scheduling::session::StudyInput;
 use cards_core::storage::{self, BackupInfo, OpenWarning, Restored, Store};
 
+use crate::clock::local_day_start_ms;
+
 /// A cheap-to-clone handle on the open database, shared by the window and
 /// its widgets.
 ///
@@ -67,9 +69,14 @@ impl AppState {
         &self.0.data_dir
     }
 
-    /// The live decks with their new and due counts as of now.
+    /// The live decks with what each has to study now, counted like the
+    /// deck page (see [`Store::list_decks`]).
     pub fn list_decks(&self) -> cards_core::Result<Vec<DeckSummary>> {
-        self.0.store.borrow().list_decks(cards_core::time::now_ms())
+        let now = cards_core::time::now_ms();
+        self.0
+            .store
+            .borrow()
+            .list_decks(now, local_day_start_ms(now))
     }
 
     /// Creates a deck (see [`Store::create_deck`]).
