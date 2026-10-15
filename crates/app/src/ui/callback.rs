@@ -8,6 +8,7 @@ use std::rc::Rc;
 pub struct Callback<F: ?Sized>(Rc<F>);
 
 impl<F: ?Sized> Callback<F> {
+    /// Wraps `f`, e.g. `Callback::new(Rc::new(closure))`.
     pub fn new(f: Rc<F>) -> Self {
         Self(f)
     }

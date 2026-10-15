@@ -196,8 +196,8 @@ impl CardsWindow {
                 imp.too_new_page
                     .set_description(Some(&glib::markup_escape_text(&format!(
                         "This database was made by a newer version of Cards (database version \
-                     {found}; this version supports up to {supported}). Update Cards to open \
-                     it. The database has not been changed."
+                         {found}; this version supports up to {supported}). Update Cards to \
+                         open it. The database has not been changed."
                     ))));
                 imp.too_new_path.set_label(&data_folder_line(&data_dir));
                 imp.stack.set_visible_child_name("too-new");

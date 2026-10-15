@@ -125,7 +125,7 @@ enum Controls {
     /// Fail and Pass.
     Grade,
     /// Nothing: the summary is shown.
-    None,
+    Hidden,
 }
 
 /// What a key does on this page.
@@ -276,7 +276,7 @@ impl ReviewPage {
         let (name, reveal, grade) = match controls {
             Controls::Reveal => ("reveal", true, false),
             Controls::Grade => ("grade", false, true),
-            Controls::None => ("none", false, false),
+            Controls::Hidden => ("none", false, false),
         };
         self.imp().buttons.set_visible_child_name(name);
         self.action_set_enabled("review.reveal", reveal);
@@ -331,7 +331,7 @@ impl ReviewPage {
         imp.summary_page
             .set_description(Some(&glib::markup_escape_text(&summary_text(&summary))));
         imp.window_title.set_subtitle("");
-        self.set_controls(Controls::None);
+        self.set_controls(Controls::Hidden);
         imp.stack.set_visible_child_name("summary");
         imp.done_button.grab_focus();
     }

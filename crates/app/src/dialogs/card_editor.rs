@@ -17,7 +17,7 @@ use gtk::glib;
 
 use crate::state::AppState;
 use crate::ui::callback::Callback;
-use crate::ui::toast::persistent_toast;
+use crate::ui::toast::{log_failure, persistent_toast};
 use crate::ui::{dialog, init_once};
 
 /// What a save did, for the deck page to update its list.
@@ -228,12 +228,10 @@ impl CardEditor {
         let saved = match result {
             Ok(saved) => saved,
             Err(err) => {
-                // Card text is user content: only at debug level (SPEC §2).
-                tracing::warn!("a card could not be saved");
-                tracing::debug!("{err}");
-                imp.toast_overlay.add_toast(persistent_toast(&format!(
-                    "The card could not be saved: {err}"
-                )));
+                // The editor's own overlay: the dialog covers the page's.
+                let message = format!("The card could not be saved: {err}");
+                log_failure("a card save", &message);
+                imp.toast_overlay.add_toast(persistent_toast(&message));
                 return;
             }
         };

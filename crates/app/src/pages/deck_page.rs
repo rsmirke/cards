@@ -274,7 +274,6 @@ impl DeckPage {
             }
         }
 
-        // The front is not in the title: it can be long or many lines.
         // Undo must work after going back to the deck list too, when this
         // page may be gone: the closure keeps the state, not the page.
         let id = id.to_owned();
@@ -284,6 +283,7 @@ impl DeckPage {
             .root()
             .and_downcast::<CardsWindow>()
             .map(|w| w.downgrade());
+        // The front is not in the title: it can be long or many lines.
         let toast = undo_toast("Card deleted", move || {
             undo_card_delete(&state, &id, &page, window.as_ref());
         });
