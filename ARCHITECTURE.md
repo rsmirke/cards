@@ -27,7 +27,7 @@ Dependency direction: `cards` → `cards-core`, never the reverse. `cards-core` 
   - `tests.rs`: FSRS reference values and property tests (rebuild = review-by-review).
 - `src/storage/`: SQLite storage (ADR 0005).
   - `mod.rs`: `Store::open(data_dir)` opens `<data_dir>/cards.sqlite3`. It checks integrity, sets WAL/FK, backs up and migrates. A failed daily backup or prune does not stop it. It is kept as an `OpenWarning` for `take_open_warnings`. `Store` owns the connection, an `IdGen` and a `Scheduler`. `observe_max_id` raises the generator above a table's largest id before each write that issues one.
-  - `decks.rs`: `create_deck`, `rename_deck` (trimmed, unique among live decks), `list_decks(now)` with new/due counts, `delete_deck` (soft; the deck and its live cards share one `deleted_at`).
+  - `decks.rs`: `create_deck`, `rename_deck` (trimmed, unique among live decks), `list_decks(now)` with new/due counts, `delete_deck` (soft; the deck and its live cards share one `deleted_at`), `undelete_deck` (brings back exactly that batch, ADR 0012).
   - `cards.rs`: `add_card`, `edit_card`, `card`, `list_cards`, `delete_card` (soft).
   - `review.rs`: `record_review` (event + cache in one transaction, time `max(now, last review)`), `due_cards(deck, now)`, `new_cards(deck, limit)`.
   - Every public write has a private `*_at(now)` twin for tests; `decks/`, `cards/`, `review/` hold their `tests.rs` (the review one has the cache-equals-rebuild property test). Deleted rows are hidden from every deck, card and queue operation; a deleted card's history and cache stay readable by card id (`review_events`, `card_state`) (ADR 0008).
@@ -47,7 +47,11 @@ Dependency direction: `cards` → `cards-core`, never the reverse. `cards-core` 
 - `src/startup.rs`: resolves and creates the data directory, opens `AppState`, and maps a failure to a `Problem` (recovery, too new, other), unit-tested and without GTK.
 - `src/window.rs`: `CardsWindow`, an `adw::ApplicationWindow` subclass using a composite template. It holds the `AppState` (`OnceCell`, set once). `show_main` turns open warnings into toasts and shows the main page; `show_problem` shows a startup problem page. `persistent_toast` makes a plain-text toast that stays until dismissed.
 - `src/pages/recovery_page.rs`: `RecoveryPage` explains why a backup is needed, lists backups newest first, confirms with an `AdwAlertDialog` (`data/restore_dialog.blp`) and restores on a worker thread.
-- `data/window.blp`: `AdwToastOverlay` around a header bar and a `GtkStack` with the pages `main` (empty state "No Decks Yet"), `recovery`, `too-new` and `error`.
+- `src/pages/decks_page.rs`: `DecksPage`, the root `AdwNavigationPage`. It shows the deck list (or the "No Decks Yet" empty state) and handles create, rename, and delete with an Undo toast, through `AppState`. Its class actions `decks.rename` / `decks.delete` take a deck id. See ADR 0012.
+- `src/widgets/deck_row.rs`: `DeckRow`, an `AdwActionRow` with the name, the new/due counts and a menu. Its `row.*` actions forward to the page with the row's deck id.
+- `src/dialogs/deck_name_dialog.rs`: the create/rename `AdwAlertDialog` (`ask`). Its pure name check `check_deck_name` (empty / duplicate by `deck_name_key` / valid) gives the inline error.
+- `data/window.blp`: `AdwToastOverlay` around a `GtkStack` with the pages `main` (an `AdwNavigationView` holding `DecksPage`), `recovery`, `too-new` and `error`, each with its own header bar. The window action `win.new-deck` (Ctrl+N) opens the name dialog; it is enabled only on the main page.
+- `data/decks_page.blp`, `data/deck_row.blp`, `data/deck_name_dialog.blp`: the layouts of the above.
 - `data/recovery_page.blp`, `data/restore_dialog.blp`: the recovery page and the restore confirmation.
 
 ## UI build pipeline

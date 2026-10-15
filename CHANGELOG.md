@@ -50,11 +50,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Dependency: `unicode-normalization` in `cards-core` (NFC for deck name keys).
 - Dependency: `getrandom` in `cards-core` (random bits for ids; already in the tree through `fsrs`).
 - The app opens the database at startup through `AppState` (ADR 0011):
-  - The main window shows the empty state "No Decks Yet", or a "N Decks" placeholder if the database already has decks; deck features come later.
+  - The main window shows the empty state "No Decks Yet".
   - A damaged database, a missing database file next to its journal, an interrupted restore, or another application's database shows a recovery page. It lists the backups newest first and restores the chosen one after an `AdwAlertDialog` confirmation, then the app continues.
   - A database from a newer Cards shows a page that explains this and offers no restore.
   - Any other startup failure shows a page with the message, the full error and the data folder.
   - A failed daily backup (or prune) is shown as a toast, not only logged: `Store::open` keeps it as an `OpenWarning` (`Store::take_open_warnings`).
+- Deck list on the main page (ADR 0012):
+  - Each deck shows its name and new/due counts. With no decks, the empty state has a "New Deck" button.
+  - New Deck (header button, empty state, Ctrl+N) and Rename open a dialog. An empty name or a duplicate name (ignoring case and accent composition) disables the button, and a duplicate is explained under the entry.
+  - Delete removes the deck at once and offers Undo in a toast.
+  - Icon-only buttons have tooltips and accessible labels; the row menu's label names the deck.
+- `Store::undelete_deck` in `cards-core`: restores a deleted deck and exactly the cards deleted with it; refuses, changing nothing, if a live deck took its name meanwhile.
 
 ### Changed
 - Without a usable data folder the app shows an error page instead of starting with a toast.

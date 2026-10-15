@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use cards_core::domain::DeckSummary;
+use cards_core::domain::{Deck, DeckSummary};
 use cards_core::storage::{self, BackupInfo, OpenWarning, Restored, Store};
 
 /// A cheap-to-clone handle on the open database, shared by the window and
@@ -68,6 +68,26 @@ impl AppState {
     /// The live decks with their new and due counts as of now.
     pub fn list_decks(&self) -> cards_core::Result<Vec<DeckSummary>> {
         self.0.store.borrow().list_decks(cards_core::time::now_ms())
+    }
+
+    /// Creates a deck (see [`Store::create_deck`]).
+    pub fn create_deck(&self, name: &str) -> cards_core::Result<Deck> {
+        self.0.store.borrow_mut().create_deck(name)
+    }
+
+    /// Renames a deck (see [`Store::rename_deck`]).
+    pub fn rename_deck(&self, id: &str, name: &str) -> cards_core::Result<()> {
+        self.0.store.borrow_mut().rename_deck(id, name)
+    }
+
+    /// Soft-deletes a deck and its cards (see [`Store::delete_deck`]).
+    pub fn delete_deck(&self, id: &str) -> cards_core::Result<()> {
+        self.0.store.borrow_mut().delete_deck(id)
+    }
+
+    /// Undoes [`Self::delete_deck`] (see [`Store::undelete_deck`]).
+    pub fn undelete_deck(&self, id: &str) -> cards_core::Result<Deck> {
+        self.0.store.borrow_mut().undelete_deck(id)
     }
 
     /// The problems met while opening that did not stop it. Empty after

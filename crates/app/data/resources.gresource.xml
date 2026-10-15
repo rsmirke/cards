@@ -5,5 +5,8 @@
     <file preprocess="xml-stripblanks">window.ui</file>
     <file preprocess="xml-stripblanks">recovery_page.ui</file>
     <file preprocess="xml-stripblanks">restore_dialog.ui</file>
+    <file preprocess="xml-stripblanks">decks_page.ui</file>
+    <file preprocess="xml-stripblanks">deck_row.ui</file>
+    <file preprocess="xml-stripblanks">deck_name_dialog.ui</file>
   </gresource>
 </gresources>
