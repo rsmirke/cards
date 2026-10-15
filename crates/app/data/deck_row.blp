@@ -6,8 +6,8 @@ using Adw 1;
 template $CardsDeckRow: Adw.ActionRow {
   use-markup: false;
   title-lines: 1;
-  // Opening a deck comes in the next slice (ADR 0012).
-  activatable: false;
+  // Activating the row opens the deck (ADR 0013).
+  activatable: true;
 
   [suffix]
   Gtk.MenuButton menu_button {

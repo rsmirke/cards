@@ -1,5 +1,6 @@
 //! The root page: the list of decks, or an empty state, with create,
-//! rename and delete (undone from a toast). Layout in `data/decks_page.blp`.
+//! rename and delete (undone from a toast). Activating a deck opens its
+//! page. Layout in `data/decks_page.blp`.
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -7,13 +8,15 @@ use cards_core::domain::Deck;
 use gtk::glib;
 
 use crate::dialogs::deck_name_dialog::{self, Purpose};
+use crate::pages::DeckPage;
 use crate::state::AppState;
 use crate::widgets::DeckRow;
 use crate::window::{persistent_toast, show_toast_from};
 
 mod imp {
-    use std::cell::{Cell, OnceCell};
+    use std::cell::{Cell, OnceCell, RefCell};
 
+    use adw::prelude::*;
     use adw::subclass::prelude::*;
     use gtk::glib;
 
@@ -33,6 +36,8 @@ mod imp {
         /// A name dialog is open; a second one (double click, Ctrl+N) is
         /// not opened on top of it.
         pub asking: Cell<bool>,
+        /// The deck whose page was opened last, focused when coming back.
+        pub opened: RefCell<Option<String>>,
     }
 
     #[glib::object_subclass]
@@ -69,7 +74,27 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for DecksPage {}
+    impl ObjectImpl for DecksPage {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let page = self.obj();
+            self.deck_list.connect_row_activated(glib::clone!(
+                #[weak]
+                page,
+                move |_, row| {
+                    if let Some(row) = row.downcast_ref::<crate::widgets::DeckRow>() {
+                        page.open(&row.deck_id());
+                    }
+                }
+            ));
+            // Back from a deck: its counts may have changed.
+            page.connect_shown(|page| {
+                if let Some(id) = page.imp().opened.take() {
+                    page.reload_or_toast(super::Focus::Deck(&id));
+                }
+            });
+        }
+    }
     impl WidgetImpl for DecksPage {}
     impl NavigationPageImpl for DecksPage {}
 
@@ -105,6 +130,39 @@ impl DecksPage {
             tracing::error!("the deck page already has an open database");
         }
         self.reload(Focus::Keep)
+    }
+
+    /// Reads the decks again, e.g. after a card change undone from
+    /// another page.
+    pub fn refresh(&self) {
+        self.reload_or_toast(Focus::Keep);
+    }
+
+    /// Pushes the page of deck `id`.
+    fn open(&self, id: &str) {
+        let Some(state) = self.imp().state() else {
+            return;
+        };
+        let Some(deck) = self
+            .decks(state)
+            .and_then(|d| d.into_iter().find(|d| d.id == id))
+        else {
+            return;
+        };
+        let Some(view) = self
+            .ancestor(adw::NavigationView::static_type())
+            .and_downcast::<adw::NavigationView>()
+        else {
+            tracing::error!("the deck list is not inside a navigation view");
+            return;
+        };
+        match DeckPage::new(state.clone(), deck) {
+            Ok(page) => {
+                self.imp().opened.replace(Some(id.to_owned()));
+                view.push(&page);
+            }
+            Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
+        }
     }
 
     /// Asks for a name and creates the deck.

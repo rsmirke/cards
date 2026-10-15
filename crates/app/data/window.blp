@@ -16,7 +16,7 @@ template $CardsWindow: Adw.ApplicationWindow {
       Gtk.StackPage {
         name: "main";
 
-        // The next slices push deck pages onto this view.
+        // The deck list pushes deck pages onto this view.
         child: Adw.NavigationView navigation_view {
           $CardsDecksPage decks_page {}
         };
