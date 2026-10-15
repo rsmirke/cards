@@ -4,8 +4,10 @@
 //! works even when it is damaged. In order:
 //! 1. The backup is byte-copied to `cards.sqlite3.restore.checking` in the
 //!    data directory, and **the copy** is validated (integrity, version,
-//!    schema), so what gets installed is exactly what was checked. Only
-//!    then is it renamed to `cards.sqlite3.restore.partial`: that name
+//!    schema), so what gets installed is exactly what was checked. A copy
+//!    older than this build is migrated there and validated again, so a
+//!    migration that fails refuses the restore before anything changed.
+//!    Only then is it renamed to `cards.sqlite3.restore.partial`: that name
 //!    always means "a validated copy", and a later attempt that fails never
 //!    deletes it.
 //! 2. The current database and its `-wal`, `-shm` and `-journal` files are
@@ -13,14 +15,14 @@
 //!    (plus the same suffixes). SQLite finds `<name>-wal` next to
 //!    `<name>`, so the moved-aside set still opens as one database.
 //! 3. The copy is renamed to `cards.sqlite3`, and opened with
-//!    [`Store::open`], which migrates it if it is older.
+//!    [`Store::open`].
 //!
 //! Once step 2 has started, a failure or crash can leave no main file. The
 //! data is never lost, but a plain [`Store::open`] would create a new,
 //! empty database. It refuses instead: [`Error::OrphanedSidecar`] for a
 //! `-wal` left without its main file, [`Error::InterruptedRestore`] when
 //! the validated copy is waiting to be installed. Running the restore again
-//! finishes the job. See ADR 0006.
+//! finishes the job. See ADR 0007.
 
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read};
@@ -30,7 +32,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 
 use super::backup::{BackupInfo, SQLITE_HEADER, parse_backup_name, utc_stamp};
-use super::migrations::{MIGRATIONS, Migration, migrate};
+use super::migrations::{MIGRATIONS, Migration, latest, migrate};
 use super::{
     BACKUP_DIR_NAME, DB_FILE_NAME, FILE_MODE, SIDECAR_SUFFIXES, Store, check_integrity,
     check_version, exists, sidecar_paths,
@@ -66,7 +68,8 @@ pub struct Restored {
 /// # Errors
 /// - [`Error::RestoreRefused`] if the backup is not a backup file in
 ///   `<data_dir>/backups/`, is damaged, is newer than this build, or does
-///   not have the Cards schema. Nothing was changed.
+///   not have the Cards schema, or cannot be migrated to this build's
+///   schema. Nothing was changed.
 /// - IO errors while copying or moving files, and any error from
 ///   [`Store::open`] on the restored database. If the old files were
 ///   already moved aside, they stay under their `replaced-…` name, and
@@ -109,7 +112,7 @@ fn restore_with(
     // touches a validated copy left by an interrupted earlier restore.
     let checking = restore_checking_path(data_dir);
     copy_private(backup, &checking).inspect_err(|_| remove_copy(&checking))?;
-    if let Err(err) = validate(&checking, migrations) {
+    if let Err(err) = check_copy(&checking, migrations) {
         remove_copy(&checking);
         tracing::warn!(backup = %backup.display(), "backup refused: {err}");
         return Err(refused(err));
@@ -197,11 +200,49 @@ fn copy_private(src: &Path, dest: &Path) -> Result<()> {
     to.sync_all().map_err(io_err(dest))
 }
 
+/// Validates the copy at `path`. If it is older than `migrations`, migrates
+/// it in place and validates it again, so the installed file is current
+/// and a migration that fails refuses the restore while nothing else has
+/// changed.
+fn check_copy(path: &Path, migrations: &[Migration]) -> Result<()> {
+    let version = validate(path, migrations)?;
+    if version < latest(migrations) {
+        migrate_copy(path, migrations, version)?;
+        validate(path, migrations)?;
+    }
+    Ok(())
+}
+
+/// Migrates the copy at `path` from `current` with the settings
+/// [`Store::open`] uses, except that it stays in rollback-journal mode.
+/// Each migration commits in its own transaction; on an error the copy is
+/// left part-way and must be removed.
+fn migrate_copy(path: &Path, migrations: &[Migration], current: u32) -> Result<()> {
+    let mut conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    conn.pragma_update(None, "trusted_schema", false)?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    let foreign_keys: bool = conn.pragma_query_value(None, "foreign_keys", |r| r.get(0))?;
+    if !foreign_keys {
+        return Err(Error::PragmaRejected {
+            pragma: "foreign_keys",
+            value: "0".into(),
+        });
+    }
+    migrate(&mut conn, migrations, current)?;
+    conn.close().map_err(|(_, err)| err)?;
+    Ok(())
+}
+
 /// Checks the file at `path` without writing to it: it uses a rollback
 /// journal (as every backup does), passes `integrity_check`, its version is
 /// between 1 and the last migration, and it has exactly the tables,
-/// indexes, triggers and views that `migrations` create at that version.
-fn validate(path: &Path, migrations: &[Migration]) -> Result<()> {
+/// indexes, triggers and views that `migrations` create at that version,
+/// with the same columns. Returns the version.
+fn validate(path: &Path, migrations: &[Migration]) -> Result<u32> {
     // A WAL-mode file would make even a read-only connection create and
     // read `-wal`/`-shm` files next to it, so what is checked would not be
     // the file alone. Backups are always written with a rollback journal.
@@ -222,7 +263,7 @@ fn validate(path: &Path, migrations: &[Migration]) -> Result<()> {
         return Err(Error::NotACardsDatabase);
     }
     conn.close().map_err(|(_, err)| err)?;
-    Ok(())
+    Ok(version)
 }
 
 /// Refuses a database file whose header does not say "rollback journal"
@@ -249,21 +290,71 @@ fn require_rollback_journal(path: &Path) -> Result<()> {
     }
 }
 
-/// `(type, name)` of every schema object, sorted, leaving out SQLite's own
-/// `sqlite_*` objects (`sqlite_stat1` and `sqlite_sequence` come and go
-/// with `ANALYZE` and use, and are not part of our schema).
-fn schema_objects(conn: &Connection) -> Result<Vec<(String, String)>> {
+/// A schema object: its type, its name, and for a table or an index its
+/// columns as SQLite reports them.
+type SchemaObject = (String, String, Vec<String>);
+
+/// Every schema object, sorted, leaving out SQLite's own `sqlite_*`
+/// objects (`sqlite_stat1` and `sqlite_sequence` come and go with `ANALYZE`
+/// and use, and are not part of our schema).
+///
+/// Columns come from `pragma_table_xinfo` / `pragma_index_xinfo` (name,
+/// type, NOT NULL, default, primary key; or key order and collation), not
+/// from the stored SQL text, which depends on how the object was created.
+/// Two schema versions with the same object names but different columns
+/// (as 0001 and 0002 have) are told apart.
+fn schema_objects(conn: &Connection) -> Result<Vec<SchemaObject>> {
     let mut stmt = conn.prepare(
         "SELECT type, name FROM sqlite_schema
          WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
          ORDER BY type, name",
     )?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let names = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut table_cols = conn.prepare(
+        "SELECT name, type, \"notnull\", dflt_value, pk
+         FROM pragma_table_xinfo(?1) ORDER BY cid",
+    )?;
+    let mut index_cols = conn.prepare(
+        "SELECT name, \"desc\", coll, key
+         FROM pragma_index_xinfo(?1) ORDER BY seqno",
+    )?;
+    let mut objects = Vec::with_capacity(names.len());
+    for (kind, name) in names {
+        let columns = match kind.as_str() {
+            "table" => table_cols
+                .query_map([&name], |r| {
+                    Ok(format!(
+                        "{} {} notnull={} default={:?} pk={}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?,
+            "index" => index_cols
+                .query_map([&name], |r| {
+                    Ok(format!(
+                        "{:?} desc={} coll={:?} key={}",
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?,
+            _ => Vec::new(),
+        };
+        objects.push((kind, name, columns));
+    }
+    Ok(objects)
 }
 
 /// The schema objects of a fresh in-memory database migrated to `version`.
-fn reference_schema(migrations: &[Migration], version: u32) -> Result<Vec<(String, String)>> {
+fn reference_schema(migrations: &[Migration], version: u32) -> Result<Vec<SchemaObject>> {
     let upto = migrations
         .iter()
         .take_while(|m| m.version <= version)

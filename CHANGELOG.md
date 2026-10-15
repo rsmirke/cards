@@ -24,9 +24,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   - Damaged, too-new and non-Cards database files are refused before anything is written to them.
   - Files are created with mode `0600`, directories with `0700`.
 - Dependencies: `rusqlite` with bundled SQLite (storage), `tracing` in `cards-core` (logging migrations and backups).
-- Backup restore in `cards-core` (ADR 0006), no UI yet:
+- Scheduling (ADR 0006):
+  - `Scheduler::schedule` (one review) and `Scheduler::rebuild_state` (replay a card's review log) using FSRS-6 with default parameters and desired retention 0.90 (0.80–0.97 accepted). Fail = Again, Pass = Good.
+  - New and failed cards get one 10-minute step. A Pass from the step gives an FSRS day interval.
+  - Elapsed days are whole 24-hour periods since the last review, rounded. No time zone is involved.
+  - Deterministic interval fuzz (Anki's ranges), seeded from card id and review count, so rebuilds are reproducible.
+  - `schedule` refuses a review dated before the card's last review, so the log replays in the order it was recorded. Recording code must store `max(now, last_review_at)`.
+  - Domain types `Grade`, `ReviewEvent`, `Phase`, `CardState`.
+  - Migration 0002: `card_schedule` recreated with a `phase` column and rebuilt from `review_events` in the same transaction. `Store::review_events`, `Store::card_state`, `Store::rebuild_schedule_cache`.
+- Dependencies: `fsrs` (the reference FSRS implementation, as SPEC requires), `proptest` (dev-only, property tests for replay).
+- Backup restore in `cards-core` (ADR 0007), no UI yet:
   - `list_backups`: the backups, newest first, with time and size.
-  - `restore_backup`: validates the backup (integrity, version, exact schema) before changing anything. Moves the current database with its `-wal`/`-shm` aside to `cards.sqlite3.replaced-<timestamp>` instead of deleting it. Installs the backup atomically and opens it, migrating it if it is older. Works when the current database is damaged.
+  - `restore_backup`: validates the backup (integrity, version, exact schema: object names and their columns) before changing anything. An older backup (e.g. schema v1) is migrated on that scratch copy first, so a failed migration refuses the restore with nothing changed. Moves the current database with its `-wal`/`-shm`/`-journal` aside to `cards.sqlite3.replaced-<timestamp>` instead of deleting it. Installs the backup atomically and opens it. Works when the current database is damaged.
   - `Store::open` refuses to start an empty database when the database file is missing but its `-wal`/`-journal`, or an interrupted restore's copy, is still there.
 - README: "Recovering your data".
 

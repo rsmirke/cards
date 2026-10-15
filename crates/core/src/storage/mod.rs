@@ -5,6 +5,7 @@
 mod backup;
 mod migrations;
 mod restore;
+mod schedule;
 
 use std::fs::{self, OpenOptions, Permissions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};

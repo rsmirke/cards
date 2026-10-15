@@ -8,10 +8,13 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use super::*;
+use crate::domain::CardState;
+use crate::scheduling::Scheduler;
 use crate::storage::backup::{check_rows, create_backup, list_backups};
 use crate::storage::latest;
 use crate::storage::tests::{
-    DAY_MS, DAY0, FAKE_V1, FAKE_V2, corrupt_btree, count, insert_sample, mode,
+    CARD, CARD2, DAY_MS, DAY0, DECK, FAILING_V2, FAKE_V1, FAKE_V2, REVIEWS, corrupt_btree, count,
+    insert_events, insert_sample, mode,
 };
 
 const DECK2: &str = "01920000-0000-7000-8000-000000000009";
@@ -102,9 +105,16 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, (bool, Vec<u8>)> {
     out
 }
 
+/// No scratch copy, and no `-journal`/`-wal`/`-shm` next to one, is left.
 fn no_partial_left(e: &Env) {
-    assert!(!restore_partial_path(&e.data).exists());
-    assert!(!restore_checking_path(&e.data).exists());
+    for copy in [
+        restore_partial_path(&e.data),
+        restore_checking_path(&e.data),
+    ] {
+        for p in std::iter::once(copy.clone()).chain(sidecar_paths(&copy)) {
+            assert!(!p.exists(), "{} left behind", p.display());
+        }
+    }
 }
 
 // --- Successful restores --------------------------------------------------
@@ -381,7 +391,7 @@ fn replaced_name_gets_a_suffix_when_taken() {
 }
 
 #[test]
-fn older_backup_is_migrated_after_restore() {
+fn older_backup_is_migrated_before_install() {
     let e = Env::new();
     let store = Store::open_with(&e.db(), &e.backups(), DAY0, &[FAKE_V1]).unwrap();
     store
@@ -400,6 +410,108 @@ fn older_backup_is_migrated_after_restore() {
         .query_row("SELECT y FROM t", [], |r| r.get(0))
         .unwrap();
     assert_eq!(y, 7);
+}
+
+/// Writes a database at schema v1 (the real migration 0001) with two
+/// cards, one of them reviewed, and a cache row in the v1 shape; backs it
+/// up; then adds a deck only the current database has. The current
+/// database stays at v1. Returns the backup path.
+fn diverged_v1(e: &Env) -> PathBuf {
+    let v1 = Store::open_with(&e.db(), &e.backups(), DAY0, &MIGRATIONS[..1]).unwrap();
+    v1.conn
+        .execute_batch(&format!(
+            "INSERT INTO decks VALUES ('{DECK}', 'Maths', 1, 1);
+             INSERT INTO cards (id, deck_id, front_md, back_md, created_at, updated_at)
+                 VALUES ('{CARD}', '{DECK}', 'front', 'back', 1, 1),
+                        ('{CARD2}', '{DECK}', 'new card', 'back', 1, 1);
+             INSERT INTO card_schedule VALUES ('{CARD}', 3, 1.5, 5.0, 2, 1, 0);"
+        ))
+        .unwrap();
+    insert_events(&v1.conn, CARD, 0, &REVIEWS);
+    let backup = create_backup(&v1.conn, &e.backups(), DAY0).unwrap();
+    add_deck(&v1.conn);
+    backup
+}
+
+/// A backup from schema v1 is migrated to v2 before it is installed: the
+/// review log is kept and the schedule cache is rebuilt from it.
+#[test]
+fn v1_backup_is_restored_and_migrated_to_v2() {
+    let e = Env::new();
+    let backup = diverged_v1(&e);
+    let backup_bytes = fs::read(&backup).unwrap();
+
+    let restored = e.restore(&backup).unwrap();
+
+    let store = &restored.store;
+    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(deck_names(&store.conn), ["Maths"]);
+    assert_eq!(count(&store.conn, "cards"), 2);
+    assert_eq!(count(&store.conn, "review_events"), 4);
+    let events = store.review_events(CARD).unwrap();
+    let expected = Scheduler::default().rebuild_state(CARD, &events).unwrap();
+    assert!(matches!(expected, CardState::Scheduled(_)));
+    assert_eq!(store.card_state(CARD).unwrap(), expected);
+    assert_eq!(store.card_state(CARD2).unwrap(), CardState::New);
+    // The old v1 database is moved aside, the backup is left at v1.
+    let old = Connection::open(e.replaced()).unwrap();
+    assert_eq!(deck_names(&old), ["Maths", "Physics"]);
+    assert_eq!(fs::read(&backup).unwrap(), backup_bytes);
+    no_partial_left(&e);
+}
+
+/// A backup at the current schema version is installed as it is.
+#[test]
+fn v2_backup_is_restored() {
+    let e = Env::new();
+    let (mut store, backup) = e.diverged();
+    insert_events(&store.conn, CARD, 0, &REVIEWS);
+    store.rebuild_schedule_cache(&Scheduler::default()).unwrap();
+    let backup_v2 = create_backup(&store.conn, &e.backups(), DAY0 + 1).unwrap();
+    let expected = store.card_state(CARD).unwrap();
+    assert!(matches!(expected, CardState::Scheduled(_)));
+    drop(store);
+    fs::remove_file(backup).unwrap();
+    let backups_before = list_backups(&e.data).unwrap().len();
+
+    let restored = e.restore(&backup_v2).unwrap();
+
+    let store = &restored.store;
+    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(deck_names(&store.conn), ["Maths", "Physics"]);
+    assert_eq!(count(&store.conn, "review_events"), 5);
+    assert_eq!(store.card_state(CARD).unwrap(), expected);
+    // Nothing to migrate, so no pre-migration backup; the daily backup for
+    // the restore day is the only new one.
+    assert_eq!(list_backups(&e.data).unwrap().len(), backups_before + 1);
+    no_partial_left(&e);
+}
+
+/// A backup whose migration fails is refused before anything is moved,
+/// so the current database stays in place and opens.
+#[test]
+fn backup_whose_migration_fails_is_refused_untouched() {
+    let e = Env::new();
+    let backup = diverged_v1(&e);
+    let before = snapshot(&e.data);
+
+    let err = restore_with(
+        &e.data,
+        &backup,
+        DAY0 + DAY_MS,
+        &[MIGRATIONS[0], FAILING_V2],
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, Error::RestoreRefused { source, .. }
+            if matches!(**source, Error::Migration { version: 2, .. })),
+        "{err:?}"
+    );
+    assert_eq!(snapshot(&e.data), before, "nothing changed");
+    no_partial_left(&e);
+    let store = Store::open_with(&e.db(), &e.backups(), DAY0, &MIGRATIONS[..1]).unwrap();
+    assert_eq!(deck_names(&store.conn), ["Maths", "Physics"]);
 }
 
 // --- Refusals -------------------------------------------------------------
@@ -521,6 +633,29 @@ fn backup_missing_a_table_is_refused() {
 fn backup_with_an_extra_object_is_refused() {
     assert_refused(
         |e, good| altered_copy(e, good, "CREATE VIEW sneaky AS SELECT 1;"),
+        |err| matches!(err, Error::NotACardsDatabase),
+    );
+}
+
+/// A v1 database relabelled as v2 has v2's table and index names but
+/// v1's `card_schedule` columns. Comparing names alone would accept it.
+#[test]
+fn v1_schema_labelled_v2_is_refused() {
+    assert_refused(
+        |e, _good| {
+            let v1 = e.backups().join("v1.sqlite3");
+            {
+                let conn = Connection::open(&v1).unwrap();
+                migrate(&mut { conn }, &MIGRATIONS[..1], 0).unwrap();
+            }
+            let bad = bad_path(e);
+            fs::rename(&v1, &bad).unwrap();
+            Connection::open(&bad)
+                .unwrap()
+                .execute_batch("PRAGMA user_version = 2;")
+                .unwrap();
+            bad
+        },
         |err| matches!(err, Error::NotACardsDatabase),
     );
 }
