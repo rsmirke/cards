@@ -7,7 +7,7 @@ App name: **Cards**. App ID: `io.github.rsmirke.Cards`. Licence: **GPL-3.0-or-la
 - Crates: `cards-core` (`crates/core`, library) and `cards` (`crates/app`, GTK binary).
 - Data directory: `~/.local/share/cards/`. Debug builds use `~/.local/share/cards-dev/` so development never touches real data. Both can be overridden with the `CARDS_DATA_DIR` environment variable.
 
-v0 (**in progress**): decks, Markdown cards, review with Fail/Pass, FSRS, SQLite. Done so far: all of it except Markdown rendering (cards are shown as plain text). v0.2 builds on it.
+v0: decks, cards, review with Fail/Pass, FSRS, SQLite. Done. Markdown rendering moved to v0.2 (§4.2); until then cards are shown as plain text. v0.2 builds on it.
 
 ---
 
@@ -43,7 +43,7 @@ cards/
     │       ├── storage/        # Store, migrations/, backup.rs, queries
     │       ├── scheduling/     # FSRS wrapper, session queue, rebuild_state
     │       ├── content/        # Markdown -> Document (UI-agnostic block/inline tree)
-    │       ├── media/          # content-addressed media store
+    │       ├── media/          # content-addressed media store (images, audio)
     │       ├── stats/          # pure functions over review events
     │       └── interchange/    # JSON export / import (versioned format)
     └── app/                   # cards — GTK binary
@@ -105,42 +105,64 @@ Storage rules:
 - Export everything to one JSON file (format has a `"format_version": 1` field): decks, cards, tags, settings, the full review log, and media as base64.
 - Import that format into an empty or existing DB, with a summary before committing ("12 decks, 840 cards, 5,210 reviews"). Import runs in one transaction.
 - Round-trip test: export → import into empty DB → export again produces an identical file.
+- This slice exports the data that exists when it lands. Every later slice that adds data (media, settings, tags) extends export, import and the round-trip test in the same slice.
 
-### 4.2 Math
+### 4.2 Markdown rendering
+- CommonMark is parsed in `core::content` into a `Document` tree (blocks and inlines), with tests in core. The app's `render/` turns that tree into widgets.
+- All text is escaped for Pango. Raw HTML is shown as text, never interpreted. Links are shown as text and never opened.
+- The same renderer is used in review and, later, in the editor preview.
+
+### 4.3 Math
 - `$...$` inline and `$$...$$` display math in Markdown.
 - Rendering: evaluate **RaTeX** first (pure-Rust, KaTeX-compatible, has `ratex-cairo` and a `ratex-gtk4` widget). Render inline math to a texture and insert it into the text flow; display math as a centered block. Formula color follows the theme foreground (works in dark mode).
 - Fallback if RaTeX doesn't work out: show the LaTeX source in monospace. Never a web view.
 - Invalid LaTeX shows the source with an error style, never crashes.
 - Record the decision in `docs/adr/`.
 
-### 4.3 Images
+### 4.4 Editor
+- `GtkSourceView` 5 with Markdown highlighting, monospace, line wrapping.
+- Live preview below or beside the editor (toggle), using the same renderer as review.
+- Ctrl+Enter saves, Ctrl+Shift+Enter saves and starts a new card in the same deck.
+
+### 4.5 Images
 - Paste or drag an image into the card editor. It is copied into the media store (`<data dir>/media/<sha256>.<ext>`) and referenced as `![](media:<sha256>.<ext>)`.
 - Only `media:` URLs render. Remote URLs and arbitrary file paths are shown as text, never fetched.
 - Accept PNG, JPEG, WebP, SVG? → **no SVG** for now (script/external-reference risk). Max 10 MB.
 
-### 4.4 Editor
-- `GtkSourceView` 5 with Markdown highlighting, monospace, line wrapping.
-- Live preview below or beside the editor (toggle), using the same renderer as review.
-- Tags field (comma-separated or `AdwEntryRow` chips). *Comes with the tags slice (migration, export), not with the editor slice.*
-- Ctrl+Enter saves, Ctrl+Shift+Enter saves and starts a new card in the same deck.
+### 4.6 Audio
+- Same media store and the same `media:` reference as images: paste or drag an audio file into the editor, it is copied to `<data dir>/media/<sha256>.<ext>` and referenced as `![](media:<sha256>.<ext>)`. The renderer picks image or audio from the stored MIME type.
+- Played with GTK's native media support (`GtkMediaFile` + `GtkMediaControls`): a play control in the card. No autoplay.
+- Only local `media:` files play. Remote URLs and arbitrary file paths are shown as text, never fetched or opened. No network access.
+- Accept Ogg (Vorbis, Opus), MP3, WAV, FLAC. Max 20 MB.
+- Audio is exported and imported like images.
 
-### 4.5 Review
-- Undo last grade (Ctrl+Z) via an `undoes` event.
-- Daily limits from settings. New cards interleaved with reviews.
-- Card actions during review: Edit (E), Suspend, Delete (with confirmation).
-- Session summary at the end: cards reviewed, pass rate, time spent.
+### 4.7 Settings / preferences
+- `settings` table via a migration (§3): desired retention, max new cards per day, max reviews per day.
+- `AdwPreferencesDialog`: desired retention, daily limits, backup folder "Open" button.
+- Changing desired retention rebuilds the schedule from the review log (ADR 0006).
 
-### 4.6 Browser and search
-- A "All Cards" page: search field (FTS5), filter by deck, tag, state (new / due / suspended).
-- Multi-select: move to deck, add tag, suspend, delete.
-
-### 4.7 Stats
+### 4.8 Stats
 - Per deck and global: reviews per day (last 30 days, bar chart), pass rate, due forecast (next 14 days), and **expected retention** today = mean FSRS retrievability over reviewed cards.
 - Drawn with `GtkDrawingArea` + Cairo, theme colors only. No chart library.
 - All computations are pure functions in `core::stats`, tested.
 
-### 4.8 Polish
-- `AdwPreferencesDialog`: desired retention, daily limits, backup folder "Open" button.
+### 4.9 Tags
+- `tags` and `card_tags` tables via a migration (§3).
+- Tags field in the card editor (comma-separated or `AdwEntryRow` chips).
+- Tags are included in export and import.
+
+### 4.10 Browser and search
+- A "All Cards" page: search field (FTS5), filter by deck, tag, state (new / due / suspended).
+- Multi-select: move to deck, add tag, suspend, delete.
+
+### 4.11 Review
+- Undo last grade (Ctrl+Z) via an `undoes` event.
+- Daily limits from settings (§4.7). New cards interleaved with reviews.
+- Card actions during review: Edit (E), Suspend, Delete (with confirmation).
+- Session summary at the end: cards reviewed, pass rate, time spent.
+- If a card's back is empty (or only whitespace), revealing shows only the Fail/Pass buttons, with no empty back area.
+
+### 4.12 Polish
 - `AdwAboutDialog`, keyboard shortcuts dialog, primary menu.
 - Remember window size and the last selected deck.
 - Every icon-only button has a tooltip and an accessible label. Full keyboard navigation.
@@ -152,10 +174,11 @@ Storage rules:
 ## 5. Later (not v0.2)
 - Meson build + Flatpak manifest + AppStream metainfo + app icon + `.desktop` file (needed to install it properly and to look like a GNOME core app).
 - Translations (gettext), French first.
+- Reversed cards (one note gives a front→back and a back→front card).
+- Cloze cards.
 - Anki `.apkg` import.
 - FSRS parameter optimisation from the user's own review log.
 - Sync.
-- Cloze cards.
 - Obsidian-style in-place live preview in the editor (formulas rendered inside the text being edited, source shown where the cursor is). Needs a spike first, with its own ADR (next free number).
 
 ## 6. Never in this project
