@@ -184,11 +184,14 @@ fn restore_with(
     install(&partial, &db_path)?;
     tracing::info!(backup = %backup.display(), "backup restored");
 
-    let store = Store::open_with(
+    // The restored backup is protected from the prune this open does: it
+    // may be the oldest one (#8).
+    let store = Store::open_protecting(
         &db_path,
         &data_dir.join(BACKUP_DIR_NAME),
         now_ms,
         migrations,
+        Some(backup),
     )?;
     Ok(Restored { store, replaced })
 }

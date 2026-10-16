@@ -153,6 +153,32 @@ fn restore_over_a_healthy_database() {
     no_partial_left(&e);
 }
 
+/// #8: restoring the oldest backup must not prune it away when the open that
+/// follows makes the day's first backup.
+#[test]
+fn the_restored_backup_survives_the_prune_after_it() {
+    let e = Env::new();
+    let (store, _) = e.diverged();
+    // One backup a day for 14 days, ending on DAY0; the restore is on the
+    // next day, which has none yet, so the oldest is out of the window.
+    let mut oldest = PathBuf::new();
+    for k in 0..14 {
+        oldest = create_backup(&store.conn, &e.backups(), DAY0 - k * DAY_MS).unwrap();
+    }
+    drop(store);
+
+    let restored = e.restore(&oldest).unwrap();
+
+    assert!(oldest.exists(), "the backup just restored is still there");
+    // The day's first backup was made too.
+    assert!(
+        e.backups()
+            .join(format!("rappel-{RESTORE_STAMP}.sqlite3"))
+            .exists()
+    );
+    assert_eq!(deck_names(&restored.store.conn), ["Maths", "Physics"]);
+}
+
 #[test]
 fn restore_through_the_public_api_closes_the_open_store() {
     let e = Env::new();
