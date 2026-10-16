@@ -6,6 +6,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## 0.2.0-alpha.2 — 2026-10-16
+
+### Changed
+- **Breaking: the app is renamed from Cards to Rappel** (ADR 0020). Crates `rappel-core` and `rappel`, app ID `io.github.rsmirke.Rappel`, `RAPPEL_DATA_DIR`, data folder `~/.local/share/rappel` (`rappel-dev` for debug builds), database `rappel.sqlite3`, backups `rappel-YYYYMMDD-HHMMSS.sqlite3`. Exports are now `.rappel` files; the archive inside is unchanged (`cards.json`, format version 1), so existing `.cards` exports still import, and the import file chooser shows both. The old data folder is not migrated or read: to move your data, **Export…** in the last Cards build and **Import…** in Rappel. Debug builds also refuse the old `cards` data folder.
+
 ## 0.2.0-alpha.1 — 2026-10-16
 
 ### Added
@@ -22,7 +27,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Tests: the cache property test also adds, deletes and undeletes cards and decks; a file-backed store is reopened; a v2 backup is restored; migration 0005 moves the due date of a late Pass (#13).
 
 ### Changed
-- **Breaking: the app is renamed from Cards to Rappel** (ADR 0020). Crates `rappel-core` and `rappel`, app ID `io.github.rsmirke.Rappel`, `RAPPEL_DATA_DIR`, data folder `~/.local/share/rappel` (`rappel-dev` for debug builds), database `rappel.sqlite3`, backups `rappel-YYYYMMDD-HHMMSS.sqlite3`. Exports are now `.rappel` files; the archive inside is unchanged (`cards.json`, format version 1), so existing `.cards` exports still import, and the import file chooser shows both. The old data folder is not migrated or read: to move your data, **Export…** in the last Cards build and **Import…** in Rappel. Debug builds also refuse the old `cards` data folder.
 - Every card side looks the same: body text, normal weight, aligned to the start. A card that is one paragraph is no longer large and centred. Headings, code, quotes and tables keep their own styles.
 - Tables have a border, lines between cells and a shaded header row, using theme colours only (`data/style.css`, the app's first stylesheet; ADR 0019).
 - A deck or card deleted on both sides at different times counts as already present in an import, not as a conflict (ADR 0017).
