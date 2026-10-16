@@ -14,6 +14,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 - The deck list's "N new · N due" counts like the deck page: new cards still allowed today (20 a day), and due reviews plus step cards due within 20 minutes. `Store::list_decks` takes the study day's start.
 - The deck page's subtitle and Study button update by themselves when a card becomes due or a new study day begins.
+- Docs: CLAUDE.md and README say v0 is released as 0.1.0.
 
 ### Fixed
 - Closing the window with unsaved text in the card editor asks "Discard Changes?" first, as Escape does.
@@ -108,3 +109,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Removed
 - `Store::due_cards` and `Store::new_cards` in `cards-core`: unused since `Store::study_input`.
+
+[Unreleased]: https://github.com/rsmirke/cards/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/rsmirke/cards/releases/tag/v0.1.0
