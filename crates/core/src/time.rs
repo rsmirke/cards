@@ -32,7 +32,7 @@ pub struct UtcParts {
 /// Splits UTC milliseconds into date and time fields. Milliseconds are
 /// dropped (rounded towards the past, also before 1970).
 #[must_use]
-pub fn utc_parts(ms: i64) -> UtcParts {
+pub(crate) fn utc_parts(ms: i64) -> UtcParts {
     let secs = ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
     let secs_of_day = secs.rem_euclid(86_400);

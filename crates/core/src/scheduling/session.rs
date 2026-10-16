@@ -18,14 +18,14 @@ use std::time::Duration;
 use crate::domain::{CardState, Grade, Phase};
 
 /// New cards a deck introduces per day (SPEC §3 default; a setting later).
-pub const NEW_PER_DAY: u32 = 20;
+pub(crate) const NEW_PER_DAY: u32 = 20;
 
 /// How early a step card may be shown when nothing else is left.
-pub const EARLY_MS: i64 = 20 * 60 * 1000;
+pub(crate) const EARLY_MS: i64 = 20 * 60 * 1000;
 
 /// The longest time recorded for one answer. A card left on screen while
 /// the user is away should not count as an hour of study.
-pub const MAX_DURATION: Duration = Duration::from_secs(60);
+pub(crate) const MAX_DURATION: Duration = Duration::from_secs(60);
 
 /// A card and when it is due, UTC milliseconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +60,7 @@ impl StudyInput {
 
 /// How many new cards may still be introduced today, after `new_today`.
 #[must_use]
-pub fn new_allowance(new_today: u32) -> u32 {
+pub(crate) fn new_allowance(new_today: u32) -> u32 {
     NEW_PER_DAY.saturating_sub(new_today)
 }
 
@@ -75,7 +75,7 @@ pub fn capped(duration: Duration) -> Duration {
 /// card `i` (of `N`) at `(i + 1) / (N + 1)`; on a tie the review goes first.
 /// With `R >= N`, no two new cards are next to each other.
 #[must_use]
-pub fn interleave<T>(reviews: Vec<T>, new: Vec<T>) -> Vec<T> {
+pub(crate) fn interleave<T>(reviews: Vec<T>, new: Vec<T>) -> Vec<T> {
     let (r_len, n_len) = (reviews.len() as u128, new.len() as u128);
     let mut out = Vec::with_capacity(reviews.len() + new.len());
     let mut reviews = reviews.into_iter().peekable();

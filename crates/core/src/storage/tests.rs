@@ -10,10 +10,9 @@ use rusqlite::Connection;
 use super::*;
 use crate::domain::{CardState, Phase, Schedule};
 use crate::scheduling::Scheduler;
+use crate::test_support::with_suffix;
 
-/// 2026-10-15T12:34:56.789Z
-pub(super) const DAY0: i64 = 1_792_067_696_789;
-pub(super) const DAY_MS: i64 = 86_400_000;
+pub(super) use crate::test_support::{DAY_MS, T0 as DAY0};
 
 pub(super) const DECK: &str = "01920000-0000-7000-8000-000000000001";
 pub(super) const CARD: &str = "01920000-0000-7000-8000-000000000002";
@@ -131,7 +130,7 @@ fn wal_and_shm_files_are_private() {
     let store = e.open(DAY0).unwrap();
     insert_sample(&store.conn);
     for suffix in ["-wal", "-shm"] {
-        assert_eq!(mode(&sidecar(&e.db, suffix)), 0o600, "{suffix}");
+        assert_eq!(mode(&with_suffix(&e.db, suffix)), 0o600, "{suffix}");
     }
 }
 
@@ -387,14 +386,8 @@ fn newer_database_is_refused_untouched() {
         "{err}"
     );
     assert_eq!(fs::read(&e.db).unwrap(), before);
-    assert!(!sidecar(&e.db, "-wal").exists(), "no WAL file created");
+    assert!(!with_suffix(&e.db, "-wal").exists(), "no WAL file created");
     assert!(e.backups().is_empty(), "no backup of a database we refuse");
-}
-
-fn sidecar(db: &Path, suffix: &str) -> PathBuf {
-    let mut p = db.as_os_str().to_owned();
-    p.push(suffix);
-    PathBuf::from(p)
 }
 
 #[test]

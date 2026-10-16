@@ -11,13 +11,15 @@ mod parse;
 mod plain;
 
 pub use parse::parse;
-pub use plain::{PREVIEW_CHARS, one_line_summary, plain_summary, plain_text};
+#[cfg(test)]
+use plain::PREVIEW_CHARS;
+pub use plain::{one_line_summary, plain_summary, plain_text};
 
 /// How deep containers (block quotes, lists, emphasis, links…) nest at
 /// most. Deeper content is flattened into the deepest container, so no
 /// text is lost. A list item or a table cell may add up to two levels
 /// below this.
-pub const MAX_DEPTH: usize = 16;
+pub(crate) const MAX_DEPTH: usize = 16;
 
 /// A parsed card side.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

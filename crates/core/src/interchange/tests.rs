@@ -15,10 +15,9 @@ use crate::Error;
 use crate::domain::Grade;
 use crate::scheduling::Scheduler;
 use crate::storage::{BACKUP_DIR_NAME, Store};
+use crate::test_support::{DAY_MS, T0, schedule_table};
 
 /// 2026-10-15T12:34:56.789Z
-const T0: i64 = 1_792_067_696_789;
-const DAY_MS: i64 = 86_400_000;
 /// The export time used by every test, so exports compare byte for byte.
 const T_EXPORT: i64 = T0 + 100 * DAY_MS;
 
@@ -63,34 +62,6 @@ fn json_of(bytes: &[u8]) -> Value {
 
 fn archive_of(value: &Value) -> Vec<u8> {
     write_archive(&serde_json::to_vec(value).unwrap()).unwrap()
-}
-
-/// A `card_schedule` row with the floats as bits, so equality is exact.
-type ScheduleRow = (String, String, i64, u64, u64, i64, i64, i64);
-
-fn schedule_table(store: &Store) -> Vec<ScheduleRow> {
-    let mut stmt = store
-        .conn
-        .prepare(
-            "SELECT card_id, phase, due_at, stability, difficulty, last_review_at, reps, lapses
-             FROM card_schedule ORDER BY card_id",
-        )
-        .unwrap();
-    stmt.query_map([], |r| {
-        Ok((
-            r.get(0)?,
-            r.get(1)?,
-            r.get(2)?,
-            r.get::<_, f64>(3)?.to_bits(),
-            r.get::<_, f64>(4)?.to_bits(),
-            r.get(5)?,
-            r.get(6)?,
-            r.get(7)?,
-        ))
-    })
-    .unwrap()
-    .collect::<rusqlite::Result<_>>()
-    .unwrap()
 }
 
 /// A small but varied database: a renamed deck, a deleted deck, edited,
