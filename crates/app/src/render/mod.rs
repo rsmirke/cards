@@ -127,10 +127,19 @@ fn list(start: Option<u64>, items: &[Vec<Block>], lists: usize) -> gtk::Grid {
 
 /// A table in a horizontal scroller, so a wide one fits a narrow window.
 /// The grid has a border, a line between cells and a shaded header row,
-/// from the classes of [`table_cell_classes`] and `data/style.css`.
+/// from the classes of [`table_cell_classes`] and `data/style.css`. It is
+/// as wide as its columns, at the start, so the border hugs the table.
 fn table(align: &[Align], header: &[Cell], rows: &[Vec<Cell>]) -> gtk::ScrolledWindow {
     let grid = gtk::Grid::new();
     grid.add_css_class("card-table");
+    // The scroller's viewport gives its child at least its own width (the
+    // default `hscroll-policy` is `Minimum`, GtkScrollable docs), and
+    // the default `Fill` stretched the bordered grid across it, leaving an
+    // empty strip inside the border. `Start` keeps the grid at its natural
+    // width (GtkAlign docs: alignment applies when a widget gets a larger
+    // allocation than it needs). A table wider than the window still gets
+    // its full width, as its labels do not wrap, so it scrolls.
+    grid.set_halign(gtk::Align::Start);
     // GTK CSS has no `overflow`; this clips the shaded header to the
     // rounded border.
     grid.set_overflow(gtk::Overflow::Hidden);
