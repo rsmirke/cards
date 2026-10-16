@@ -109,6 +109,80 @@ pub fn start_fresh(data_dir: &Path, current: Option<Store>) -> Result<Restored> 
     start_fresh_with(data_dir, now_ms(), MIGRATIONS)
 }
 
+/// Installs the validated copy an interrupted restore left waiting, when
+/// the backup it came from is gone (ADR 0026, #22). `current` is the open
+/// store, if any; it is closed first.
+///
+/// The waiting copy was validated before it got its name (ADR 0007), but it
+/// is copied to a scratch name and checked again (and migrated, if this
+/// build is newer), so what is installed is exactly what was checked, and
+/// the waiting file itself is only replaced by that checked copy. The
+/// database and sidecar files still in place are moved aside as
+/// [`restore_backup`] does.
+///
+/// # Errors
+/// - [`Error::NoRestoreWaiting`] if there is no waiting copy (or it is not
+///   a regular file). Nothing was changed.
+/// - [`Error::RestoreRefused`] if the copy is damaged, too new, or not a
+///   Rappel database. The copy stays where it is and nothing was changed.
+/// - IO errors while copying or moving files, and any error from
+///   [`Store::open`] on the installed database.
+pub fn finish_restore(data_dir: &Path, current: Option<Store>) -> Result<Restored> {
+    drop(current);
+    finish_restore_with(data_dir, now_ms(), MIGRATIONS)
+}
+
+/// [`finish_restore`] with every input explicit, for tests.
+fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> Result<Restored> {
+    let partial = restore_partial_path(data_dir);
+    let waiting = match fs::symlink_metadata(&partial) {
+        Ok(meta) => meta.file_type().is_file(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(Error::Io {
+                path: partial,
+                source,
+            });
+        }
+    };
+    if !waiting {
+        return Err(Error::NoRestoreWaiting);
+    }
+    let refused = |source: Error| Error::RestoreRefused {
+        path: partial.clone(),
+        source: Box::new(source),
+    };
+
+    let checking = restore_checking_path(data_dir);
+    copy_private(&partial, &checking).inspect_err(|_| remove_copy(&checking))?;
+    if let Err(err) = check_copy(&checking, migrations) {
+        remove_copy(&checking);
+        tracing::warn!("the waiting restore copy was refused: {err}");
+        return Err(refused(err));
+    }
+    // Replaces the waiting file atomically with the checked (and perhaps
+    // migrated) copy.
+    fs::rename(&checking, &partial).map_err(|source| Error::Io {
+        path: checking.clone(),
+        source,
+    })?;
+    sync_parent(&partial)?;
+    let db_path = data_dir.join(DB_FILE_NAME);
+    let replaced = move_aside(&db_path, now_ms)?;
+    if let Some(path) = &replaced {
+        tracing::info!(path = %path.display(), "previous database moved aside");
+    }
+    install(&partial, &db_path)?;
+    tracing::info!("interrupted restore finished");
+    let store = Store::open_with(
+        &db_path,
+        &data_dir.join(BACKUP_DIR_NAME),
+        now_ms,
+        migrations,
+    )?;
+    Ok(Restored { store, replaced })
+}
+
 /// [`start_fresh`] with every input explicit, for tests.
 fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> Result<Restored> {
     let partial = restore_partial_path(data_dir);

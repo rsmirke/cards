@@ -25,7 +25,7 @@ pub use backup::{BackupInfo, list_backups};
 use backup::{check_rows, has_backup_for_day};
 pub(crate) use backup::{create_backup, prune_backups};
 use migrations::{MIGRATIONS, Migration, latest, migrate};
-pub use restore::{Restored, restore_backup, start_fresh};
+pub use restore::{Restored, finish_restore, restore_backup, start_fresh};
 pub(crate) use schedule::rebuild_cards;
 
 /// File name of the database inside the data directory.

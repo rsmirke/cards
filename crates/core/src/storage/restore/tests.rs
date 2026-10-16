@@ -512,6 +512,130 @@ fn failed_install_keeps_the_copy_and_never_starts_an_empty_database() {
     assert_eq!(deck_names(&old), ["Maths", "Physics"]);
 }
 
+// --- Finishing an interrupted restore (#22) -------------------------------
+
+/// The state of #22: a restore moved the database aside and was interrupted,
+/// and the backup it came from is gone. Returns the waiting copy.
+fn interrupted_without_its_backup(e: &Env) -> PathBuf {
+    let (store, backup) = e.diverged();
+    drop(store);
+    let partial = copy_validate_and_move_aside(e, &backup);
+    fs::remove_dir_all(e.backups()).unwrap();
+    partial
+}
+
+#[test]
+fn finishing_installs_exactly_the_waiting_copy() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    assert!(matches!(e.open(), Err(Error::InterruptedRestore(_))));
+    // Something strayed into the place meanwhile.
+    fs::write(with_suffix(&e.db(), "-wal"), b"intruder").unwrap();
+
+    let finished = finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS).unwrap();
+
+    assert_eq!(deck_names(&finished.store.conn), ["Maths"]);
+    assert_eq!(count(&finished.store.conn, "review_events"), 1);
+    assert!(!partial.exists());
+    assert_eq!(mode(&e.db()), 0o600);
+    // The stray file is moved aside, next to the set the interruption made.
+    let stem = finished.replaced.clone().unwrap();
+    assert_eq!(stem, with_suffix(&e.replaced(), "-2"));
+    assert_eq!(fs::read(with_suffix(&stem, "-wal")).unwrap(), b"intruder");
+    let old = Connection::open(e.replaced()).unwrap();
+    assert_eq!(deck_names(&old), ["Maths", "Physics"]);
+    // What was installed was the waiting copy: same rows as the backup it
+    // came from, which was a valid database of the current version.
+    drop(finished);
+    let installed = Connection::open(e.db()).unwrap();
+    assert_eq!(deck_names(&installed), ["Maths"]);
+    no_partial_left(&e);
+}
+
+#[test]
+fn finishing_through_the_public_api_works_without_any_backup() {
+    let e = Env::new();
+    interrupted_without_its_backup(&e);
+
+    let finished = finish_restore(&e.data, None).unwrap();
+
+    assert_eq!(deck_names(&finished.store.conn), ["Maths"]);
+    assert_eq!(finished.replaced, None, "the database was already aside");
+}
+
+#[test]
+fn finishing_without_a_waiting_copy_is_refused_and_changes_nothing() {
+    let e = Env::new();
+    let (store, _) = e.diverged();
+    drop(store);
+    let before = snapshot(&e.data);
+
+    assert!(matches!(
+        finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS),
+        Err(Error::NoRestoreWaiting)
+    ));
+
+    assert_eq!(snapshot(&e.data), before);
+}
+
+#[test]
+fn finishing_refuses_a_waiting_symlink_and_changes_nothing() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    let real = e.data.join("elsewhere");
+    fs::rename(&partial, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &partial).unwrap();
+    let before = snapshot(&e.data);
+
+    assert!(matches!(
+        finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS),
+        Err(Error::NoRestoreWaiting)
+    ));
+
+    assert_eq!(snapshot(&e.data), before);
+}
+
+#[test]
+fn finishing_refuses_a_damaged_copy_and_keeps_it() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    fs::write(&partial, vec![0x42; 8192]).unwrap();
+    fs::write(with_suffix(&e.db(), "-wal"), b"stray").unwrap();
+    let before = snapshot(&e.data);
+
+    let err = finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS).unwrap_err();
+
+    assert!(matches!(err, Error::RestoreRefused { .. }), "{err:?}");
+    assert_eq!(snapshot(&e.data), before, "nothing changed, copy kept");
+    assert!(matches!(e.open(), Err(Error::OrphanedSidecar(_))));
+}
+
+#[test]
+fn finishing_migrates_a_copy_from_an_older_build() {
+    let e = Env::new();
+    let store = Store::open_with(&e.db(), &e.backups(), DAY0, &[FAKE_V1]).unwrap();
+    store
+        .conn
+        .execute_batch("INSERT INTO t VALUES (1);")
+        .unwrap();
+    let backup = create_backup(&store.conn, &e.backups(), DAY0).unwrap();
+    drop(store);
+    let partial = restore_partial_path(&e.data);
+    copy_private(&backup, &partial).unwrap();
+    move_aside(&e.db(), DAY0 + DAY_MS).unwrap();
+    fs::remove_dir_all(e.backups()).unwrap();
+
+    let finished = finish_restore_with(&e.data, DAY0 + DAY_MS, &[FAKE_V1, FAKE_V2]).unwrap();
+
+    assert_eq!(finished.store.schema_version().unwrap(), 2);
+    let y: i64 = finished
+        .store
+        .conn
+        .query_row("SELECT y FROM t", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(y, 7);
+}
+
 #[test]
 fn replaced_name_gets_a_suffix_when_taken() {
     let e = Env::new();

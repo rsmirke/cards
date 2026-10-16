@@ -49,8 +49,9 @@ impl RecoveryReason {
                  the data folder, not deleted."
             }
             Self::InterruptedRestore => {
-                "A restore was interrupted before it finished. Restore a backup again to \
-                 continue. The previous database is kept in the data folder, not deleted."
+                "A restore was interrupted before it finished. Its checked copy is waiting in \
+                 the data folder: Finish Restore installs it, or you can restore a backup \
+                 instead. The previous database is kept in the data folder, not deleted."
             }
         }
     }
