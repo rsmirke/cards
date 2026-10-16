@@ -1,8 +1,9 @@
 # 21. Math rendering with RaTeX
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-16
-- Amends (once accepted): SPEC §4.2 (inline math is drawn as vectors in the text flow, not as a texture), SPEC §1 principle 5 (reading system fonts, see point 7)
+- Accepted: 2026-10-16, by the maintainer
+- Amends: SPEC §4.2 (inline math is drawn as vectors in the text flow, not as a texture), SPEC §1 principle 5 (reading system fonts, see point 7)
 
 ## Context
 
@@ -113,14 +114,14 @@ Hostile formulas are cheap. Many small *valid* formulas are what can freeze the 
 - **`pulldown-latex` and `latex2mathml`:** they output MathML, and GTK cannot render MathML.
 - **Monospace source** (today): always correct and readable for short formulas, unreadable for #8, #10 and #15. It stays as the error fallback.
 
-## Decision (proposed)
+## Decision
 
 1. **Use RaTeX's layout crates plus `ratex-cairo`, not the `ratex-gtk4` widget.**
    - `ratex-gtk4` is tied to gtk4 0.9.
    - It lays out every formula twice: once in black, then again in the theme colour.
    - It exports a C ABI we do not need.
    - Our widgets draw through `Snapshot::append_cairo`.
-2. **cairo-rs 0.22.** Ask upstream to move `ratex-cairo` to cairo-rs 0.22 (the one-line bump). The math slice waits for that release instead of vendoring or patching the crate. If upstream does not move within the v0.2 timebox, the fallback is a short painter of our own over `ratex-types::DisplayList`. It would draw glyph outlines from `ab_glyph`, plus lines, rectangles and paths, and replace only `ratex-cairo`.
+2. **cairo-rs 0.22.** Ask upstream for a `ratex-cairo` release on our gtk-rs versions (the one-line bump; the issue is drafted with the `\oiint` report, point 9). If there is no release **two weeks after the issue is filed**, fall back to a **pinned patch**: a copy of `ratex-cairo` 0.1.15 with the bump, kept in the repository and wired in with `[patch.crates-io]` and a path (not git, because `deny.toml` has `allow-git = []`), with its MIT licence file. Drop the patch when upstream releases. This replaces the earlier fallback of writing our own painter.
 3. **Inline math: one widget per paragraph**, as in inline B. Text plus `AttrShape` boxes with each formula's height and depth, then the formulas drawn at Pango's positions. Formulas are vectors drawn at the device scale, not textures. Body text keeps Pango markup from ADR 0019. Math is 1.21 × the body size. If an inline formula is wider than the line, the text still wraps at the card width. Only that formula overflows, and it scrolls horizontally like display math; the math slice decides whether this is done by laying the formula out as its own block.
 4. **Display math:** a centred block that scrolls horizontally when wider than the card.
    - Like ADR 0019's tables, the scroller cannot take focus, so it scrolls by pointer and touch only.
@@ -134,21 +135,19 @@ Hostile formulas are cheap. Many small *valid* formulas are what can freeze the 
    - A display formula counts as 2 widgets in ADR 0019's 2,000-widget budget (scroller and drawing area). Inline formulas add none, because they are drawn inside their paragraph's widget.
    - `\href` and `\url` stay plain text, never clickable.
    - The screen-reader text stays the LaTeX source (`plain_text`, ADR 0019).
-7. **System fonts (SPEC §1 principle 5).** The principle says card text "never triggers network or file access outside the app's data directory". With RaTeX, a CJK character or an emoji inside `$…$` reads a system font file. Pango already does the same for the same characters in ordinary card text, through fontconfig. Proposal: amend the principle to "…outside the app's data directory, except reading installed system fonts, as GTK already does for text", and accept two side effects:
+7. **System fonts (SPEC §1 principle 5).** The principle said card text "never triggers network or file access outside the app's data directory". With RaTeX, a CJK character or an emoji inside `$…$` reads a system font file. Pango already does the same for the same characters in ordinary card text, through fontconfig. **Decided:** the principle now reads "Card content never causes network access or access to user files. Reading installed system fonts is allowed." Two side effects are accepted:
    - `RATEX_UNICODE_FONT`: a variable only the user can set.
    - The one-line stderr message on first fallback, with an upstream request to make it go through `log` or be opt-in.
 
-   The alternative is to show a formula containing such characters as source. It is simple, but it hurts cards in Chinese or Japanese.
-8. **Gate prerequisites. The math slice does not start until the maintainer has decided both of these**, because both change `deny.toml`, and CLAUDE.md forbids weakening the gate without stating why.
+   The rejected alternative was to show a formula containing such characters as source, which hurts cards in Chinese or Japanese.
+8. **Gate changes.** Both decided by the maintainer. They change `deny.toml`, which CLAUDE.md protects, so each states its reason. They are made in the math slice, together with the dependency, because cargo-deny can only check them once `ratex-katex-fonts` is in the tree. This ADR PR changes neither `deny.toml` nor the README.
    - **OFL-1.1:**
-     - A *scoped* `[[licenses.exceptions]]` that allows `OFL-1.1` for `ratex-katex-fonts` only, not a global `allow`.
+     - A *scoped* `[[licenses.exceptions]]` that allows `OFL-1.1` for `ratex-katex-fonts` only, not a global `allow`, with a comment saying why: the crate embeds the KaTeX fonts, which are OFL-1.1 data aggregated with the program, not code combined with it.
      - A `[[licenses.clarify]]` that records the crate as `MIT AND OFL-1.1`, pinned by the hash of its `fonts/OFL.txt` (`license-files`). This alone does not guarantee that a licence change fails the gate: a release could add fonts under another licence and keep `OFL.txt`, and a new crate version may fall back to its `MIT` metadata. So the math slice checks how cargo-deny behaves when the hash or the version no longer matches, and every `ratex-*` bump includes a manual review of `FONT_NOTICE.txt`.
-     - Ship `OFL.txt` with the app and mention it in the About dialog.
+     - Ship `OFL.txt` with the app, mention the fonts in the About dialog, and **credit the KaTeX fonts in the README**.
      - Basis: the fonts are separate data, not code combined with the GPL program. This does not rest on an FSF compatibility listing, which, as far as I know, the OFL does not have.
-   - **RUSTSEC-2026-0192:**
-     - Either an `ignore` entry with a reason: unmaintained, not a vulnerability; it only parses the bundled KaTeX fonts and installed system fonts. Review it whenever RaTeX, ab_glyph or fontdb update.
-     - Or wait until RaTeX moves to `skrifa`.
-9. **Upstream reports:** the `\oiint` rendering, the cairo-rs bump, and the stderr output. `\mathbb{1}` matches KaTeX, so card authors can type 𝟙 (U+1D7D9) instead.
+   - **RUSTSEC-2026-0192:** an `ignore` entry in `deny.toml` with a reason: unmaintained, not a vulnerability; `ttf-parser` only parses the bundled KaTeX fonts and installed system fonts. **Review date: 2027-01-16** (three months). cargo-deny has no expiry field, so the date is written in the `reason`, and the math slice adds a reminder (CHANGELOG or issue). Review it earlier whenever RaTeX, ab_glyph or fontdb update, and remove it when RaTeX moves to `skrifa`.
+9. **Upstream reports:** one issue covering the gtk-rs versions (point 2) and the `\oiint` rendering. The stderr output is a separate, later request. `\mathbb{1}` matches KaTeX, so card authors can type 𝟙 (U+1D7D9) instead.
 
 ## Consequences
 
@@ -156,5 +155,5 @@ Hostile formulas are cheap. Many small *valid* formulas are what can freeze the 
 - The app grows by up to 5 MB and about 60 packages (RaTeX, ab_glyph, fontdb, regex, rust-embed…), plus bundled OFL fonts.
 - We depend on a young project that mostly has one author. The layout crates do not depend on GTK, and the drawing step is small, so a fork or our own painter is a bounded fallback.
 - SPEC §4.2 ("render inline math to a texture") and §1 principle 5 are amended when this ADR is accepted.
-- If either gate decision in point 8, or the font-access amendment in point 7, is "no", the decision becomes: keep monospace source. Revisit when RaTeX drops `ttf-parser`, or when the fonts can be loaded from a system KaTeX fonts package.
+- The `ttf-parser` ignore is temporary: review it by 2027-01-16, and when RaTeX drops `ttf-parser`.
 - Untested so far: the display widget on path 2, a real HiDPI monitor with the GL renderer (the spike's scale-2 shots used the cairo renderer), and screen readers.
