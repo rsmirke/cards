@@ -4,7 +4,7 @@
 //!
 //! Card text is untrusted. Raw HTML is kept as literal text, never
 //! interpreted, and nothing here touches the network or the filesystem.
-//! The tree nests at most [`MAX_DEPTH`] levels, so a hostile card cannot
+//! The tree nests at most `MAX_DEPTH` levels, so a hostile card cannot
 //! make anything that walks it recurse without bound.
 
 mod parse;

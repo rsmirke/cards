@@ -30,9 +30,9 @@ const DIR_MODE: u32 = 0o700;
 /// `cfg!(debug_assertions)`) so both cases are testable from either build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
-    /// Development build: uses [`DEBUG_DIR_NAME`].
+    /// Development build: uses `DEBUG_DIR_NAME`.
     Debug,
-    /// Release build: uses [`RELEASE_DIR_NAME`].
+    /// Release build: uses `RELEASE_DIR_NAME`.
     Release,
 }
 

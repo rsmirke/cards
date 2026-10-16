@@ -12,7 +12,7 @@
 //!   to the nearest: no time zone is involved, so a rebuild needs nothing
 //!   but the stored UTC timestamps.
 //!
-//! [`Scheduler::rebuild_state`] is a fold of [`Scheduler::schedule`] over
+//! `Scheduler::rebuild_state` is a fold of `Scheduler::schedule` over
 //! the events in `(reviewed_at, id)` order. For the cache and a rebuild to
 //! agree, the log must already be in that order, which `schedule` enforces
 //! for times: it refuses a review earlier than the card's last one. Code

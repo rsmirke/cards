@@ -5,8 +5,8 @@
 //! Order of cards:
 //! 1. a card in the 10-minute step that is due now (earliest first);
 //! 2. otherwise the next card of the queue: due reviews with new cards
-//!    spread evenly among them ([`interleave`]);
-//! 3. otherwise a step card due within [`EARLY_MS`], shown early;
+//!    spread evenly among them (`interleave`);
+//! 3. otherwise a step card due within `EARLY_MS`, shown early;
 //! 4. otherwise nothing: the session is over.
 //!
 //! A card answered into the step (a new card, or any Fail) comes back in
@@ -42,7 +42,7 @@ pub struct Due {
 pub struct StudyInput {
     /// Cards in review that are due, most overdue first.
     pub reviews: Vec<Due>,
-    /// Cards in the 10-minute step due within [`EARLY_MS`], earliest first.
+    /// Cards in the 10-minute step due within `EARLY_MS`, earliest first.
     pub steps: Vec<Due>,
     /// New cards still allowed today, oldest first.
     pub new: Vec<String>,
@@ -64,7 +64,7 @@ pub(crate) fn new_allowance(new_today: u32) -> u32 {
     NEW_PER_DAY.saturating_sub(new_today)
 }
 
-/// `duration`, capped at [`MAX_DURATION`].
+/// `duration`, capped at `MAX_DURATION`.
 #[must_use]
 pub fn capped(duration: Duration) -> Duration {
     duration.min(MAX_DURATION)

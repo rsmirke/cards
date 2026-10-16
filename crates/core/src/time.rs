@@ -66,7 +66,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// UTC milliseconds for the start of the second given by `parts`; the
-/// inverse of [`utc_parts`] up to the dropped milliseconds.
+/// inverse of `utc_parts` up to the dropped milliseconds.
 ///
 /// `None` if a field is out of range (month 1–12, day 1–31, hour 0–23,
 /// minute and second 0–59, year within ±1 000 000) or names a day that does
