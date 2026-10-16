@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use super::*;
 use crate::domain::CardState;
 use crate::scheduling::Scheduler;
-use crate::storage::backup::{check_rows, create_backup, list_backups};
+use crate::storage::backup::{check_rows, create_backup, list_backups, utc_stamp};
 use crate::storage::latest;
 use crate::storage::tests::{
     CARD, CARD2, DAY_MS, DAY0, DECK, FAILING_V2, FAKE_V1, FAKE_V2, REVIEWS, corrupt_btree, count,
@@ -300,6 +300,108 @@ fn orphaned_wal_is_refused_by_open_and_moved_aside_by_restore() {
     let stem = restored.replaced.unwrap();
     assert!(!stem.exists(), "there was no main file to move");
     assert_eq!(fs::read(with_suffix(&stem, "-wal")).unwrap(), wal_bytes);
+}
+
+/// A crash in `move_aside` after it recorded the set and renamed the main
+/// file, before it renamed the `-wal`. Returns the set's name and the
+/// `-wal`'s bytes.
+fn crash_between_the_renames(e: &Env, store: Store, at: i64) -> (PathBuf, Vec<u8>) {
+    let wal_bytes = crash_with_rows_in_wal(e, store);
+    let stem = e
+        .data
+        .join(format!("{DB_FILE_NAME}.replaced-{}", utc_stamp(at)));
+    write_moving_aside(&e.db(), &stem).unwrap();
+    fs::rename(e.db(), &stem).unwrap();
+    (stem, wal_bytes)
+}
+
+/// #9: a retry moves the stray `-wal` next to its main file, not under a new
+/// name, so the rows that were only in it are readable there.
+#[test]
+fn a_retry_after_a_crash_between_the_renames_keeps_the_set_together() {
+    let e = Env::new();
+    let (store, backup) = e.diverged();
+    let (stem, wal_bytes) = crash_between_the_renames(&e, store, DAY0);
+    assert_ne!(
+        utc_stamp(DAY0),
+        RESTORE_STAMP,
+        "the retry is at another time"
+    );
+
+    match e.open() {
+        Err(Error::OrphanedSidecar(_)) => {}
+        other => panic!("expected OrphanedSidecar, got {other:?}"),
+    }
+    let restored = e.restore(&backup).unwrap();
+
+    assert_eq!(restored.replaced.as_deref(), Some(stem.as_path()));
+    assert_eq!(fs::read(suffixed(&stem, "-wal")).unwrap(), wal_bytes);
+    assert!(!e.replaced().exists(), "no second set was started");
+    assert!(!moving_aside_path(&e.db()).exists(), "the marker is gone");
+    let old = Connection::open(&stem).unwrap();
+    assert_eq!(deck_names(&old), ["Maths", "Physics"]);
+    no_partial_left(&e);
+}
+
+/// Start Fresh moves the same set.
+#[test]
+fn start_fresh_after_a_crash_between_the_renames_keeps_the_set_together() {
+    let e = Env::new();
+    let (store, _) = e.diverged();
+    let (stem, _) = crash_between_the_renames(&e, store, DAY0);
+    fs::remove_dir_all(e.backups()).unwrap();
+
+    let fresh = e.start_fresh().unwrap();
+
+    assert_eq!(fresh.replaced.as_deref(), Some(stem.as_path()));
+    let old = Connection::open(&stem).unwrap();
+    assert_eq!(deck_names(&old), ["Maths", "Physics"]);
+}
+
+/// A marker left by a finished move must not capture a later database.
+#[test]
+fn a_marker_left_after_a_finished_move_is_not_reused() {
+    let e = Env::new();
+    let (store, backup) = e.diverged();
+    drop(store);
+    let old_stem = e
+        .data
+        .join(format!("{DB_FILE_NAME}.replaced-20200101-000000"));
+    fs::write(&old_stem, b"an older set").unwrap();
+    write_moving_aside(&e.db(), &old_stem).unwrap();
+
+    let restored = e.restore(&backup).unwrap();
+
+    assert_eq!(restored.replaced.as_deref(), Some(e.replaced().as_path()));
+    assert_eq!(fs::read(&old_stem).unwrap(), b"an older set");
+    assert!(!moving_aside_path(&e.db()).exists());
+}
+
+#[test]
+fn a_marker_naming_another_file_is_refused_and_nothing_changes() {
+    for content in [
+        "../elsewhere",
+        "rappel.sqlite3",
+        "rappel.sqlite3.replaced-1/../x",
+        "",
+    ] {
+        let e = Env::new();
+        let (store, backup) = e.diverged();
+        drop(store);
+        fs::write(moving_aside_path(&e.db()), content).unwrap();
+        let before = snapshot(&e.data);
+
+        let err = e.restore(&backup).unwrap_err();
+
+        assert!(matches!(err, Error::Io { .. }), "{content:?}: {err:?}");
+        // The validated copy waits, as after any failure past that point;
+        // the database and the marker are as they were.
+        let mut after = snapshot(&e.data);
+        after.remove(&restore_partial_path(&e.data));
+        let mut before = before;
+        before.remove(&restore_partial_path(&e.data));
+        assert_eq!(after, before, "{content:?}");
+    }
 }
 
 /// Runs the first half of a restore by hand: copy and validate, then move
