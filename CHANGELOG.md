@@ -21,7 +21,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Every card side looks the same: body text, normal weight, aligned to the start. A card that is one paragraph is no longer large and centred. Headings, code, quotes and tables keep their own styles.
-- Tables have a border, lines between cells and a shaded header row, using theme colours only (`data/style.css`, the app's first stylesheet; ADR 0019).
+- Tables have a border that fits the columns (a wider table scrolls sideways), lines between cells and a shaded header row, using theme colours only (`data/style.css`, the app's first stylesheet; ADR 0019).
 - A deck or card deleted on both sides at different times counts as already present in an import, not as a conflict (ADR 0017).
 - Deck names are limited to 1 KiB and card sides to 1 MiB (in bytes), the limits an import accepts, so every export can be imported again. The deck name dialog and the card editor explain a too long text under the field and disable saving; the store refuses it (`Error::DeckNameTooLong`, `Error::CardSideTooLong`).
 - The deck list's "N new · N due" counts like the deck page: new cards still allowed today (20 a day), and due reviews plus step cards due within 20 minutes. `Store::list_decks` takes the study day's start.
