@@ -47,7 +47,11 @@ impl CardEditor {
             self,
             move |_| {
                 editor.update_actions();
-                editor.update_suggestions();
+                // Not while the text is being filled in by the editor.
+                if !editor.imp().filling.get() {
+                    editor.imp().edited.set(true);
+                    editor.update_suggestions();
+                }
             }
         ));
         entry.connect_notify_local(
@@ -55,7 +59,16 @@ impl CardEditor {
             glib::clone!(
                 #[weak(rename_to = editor)]
                 self,
-                move |_, _| editor.update_suggestions()
+                move |_, _| {
+                    let imp = editor.imp();
+                    // The cursor moves after every typed character: that
+                    // is not a move. A move by itself (arrows, a click)
+                    // closes the list, so a later Tab cannot rewrite a name
+                    // the user did not touch.
+                    if !imp.filling.get() && !imp.edited.replace(false) {
+                        editor.close_suggestions();
+                    }
+                }
             ),
         );
 
@@ -229,6 +242,10 @@ impl CardEditor {
             KeyAction::Highlight(movement) => self.move_highlight(movement),
             KeyAction::Accept(index) => self.accept_suggestion(index),
             KeyAction::Close => self.close_suggestions(),
+            KeyAction::KeepTyped => {
+                self.close_suggestions();
+                return glib::Propagation::Proceed;
+            }
             KeyAction::Pass => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
@@ -265,7 +282,11 @@ impl CardEditor {
         let typed = tags::name_at(&text, cursor);
         let (new_text, new_cursor) = tags::accept(&text, typed, &tag.name);
         self.close_suggestions();
+        // `set_text` replaces everything with the cursor at the start: the
+        // suggestions must not follow it.
+        imp.filling.set(true);
         entry.set_text(&new_text);
         entry.set_position(i32::try_from(new_cursor).unwrap_or(-1));
+        imp.filling.set(false);
     }
 }

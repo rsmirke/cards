@@ -123,6 +123,12 @@ mod imp {
         /// The tags the suggestions list shows now, and the highlighted one.
         pub suggested: RefCell<Vec<super::Tag>>,
         pub highlighted: Cell<Option<usize>>,
+        /// The editor is putting text in the tags field itself (a loaded
+        /// card, an accepted suggestion): that is not typing.
+        pub filling: Cell<bool>,
+        /// The field's text changed and its cursor has not been seen
+        /// moving since (see `suggest.rs`).
+        pub edited: Cell<bool>,
         pub on_saved: OnceCell<Callback<OnSaved>>,
         /// The "Discard Changes?" question is showing; it is not asked twice.
         pub asking_discard: Cell<bool>,
@@ -441,8 +447,10 @@ impl CardEditor {
         }
         imp.saved_tag_keys
             .replace(tags::tag_keys(&tags::check_tags(tags).names));
+        imp.filling.set(true);
         imp.tags_entry.set_text(tags);
         imp.tags_entry.set_position(-1);
+        imp.filling.set(false);
         self.update_actions();
         self.refresh_preview();
     }
@@ -466,7 +474,11 @@ impl CardEditor {
         self.action_set_enabled("editor.save-and-new", can_save);
         show_field_error(&*imp.front_view, &imp.front_error, check.front_error);
         show_field_error(&*imp.back_view, &imp.back_error, check.back_error);
-        show_field_error(&*imp.tags_entry, &imp.tags_error, tags.error.clone());
+        // While the tags could not be read, the error says so (it is set by
+        // `read_card_tags`); there is nothing to check.
+        if imp.tags_loaded.get() {
+            show_field_error(&*imp.tags_entry, &imp.tags_error, tags.error.clone());
+        }
         // With unsaved changes, closing emits `close-attempt` instead. A
         // tags field that holds an error is a change.
         let tags_same = !imp.tags_loaded.get()
@@ -828,6 +840,24 @@ mod tests {
             assert_eq!(after.card, before.card);
             assert_eq!(state.tags().unwrap().len(), 2);
             assert!(matches!(saved.borrow()[0], Saved::Edited(_)));
+        });
+    }
+
+    #[test]
+    fn unreadable_tags_disable_the_field_and_say_why_and_a_save_keeps_them() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, state, deck, editor, _saved) = editor_over(Some(("front", &["a"])));
+            let imp = editor.imp();
+            let card = state.list_tagged_cards(&deck).unwrap().remove(0);
+            // A card that is gone cannot have its tags read.
+            state.delete_card(&card.card.id).unwrap();
+            let text = editor.read_card_tags(&card.card.id);
+            editor.load(Some(&card.card.id), "front", "", &text);
+            assert!(!imp.tags_entry.is_sensitive());
+            assert!(imp.tags_error.is_visible());
+            // Edits to the sides do not hide the explanation.
+            imp.front_buffer.set_text("front 2");
+            assert!(imp.tags_error.is_visible());
         });
     }
 

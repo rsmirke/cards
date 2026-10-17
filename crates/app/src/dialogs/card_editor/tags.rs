@@ -50,6 +50,7 @@ pub fn suggestions(all: &[Tag], text: &str, cursor: usize) -> Vec<Tag> {
     if needle.is_empty() {
         return Vec::new();
     }
+    let typed_key = name_key(&text[typed.clone()]);
     let mut others = Vec::new();
     let mut at = 0;
     for piece in text.split(',') {
@@ -65,15 +66,19 @@ pub fn suggestions(all: &[Tag], text: &str, cursor: usize) -> Vec<Tag> {
         .filter(|tag| !others.contains(&name_key(&tag.name)))
         .filter_map(|tag| {
             let key = search_key(&tag.name);
-            let rank = if key.starts_with(&needle) {
+            // The tag the user typed in full comes first, so Tab cannot swap
+            // it for a look-alike ("Économie" / "Economie" are two tags).
+            let rank = if name_key(&tag.name) == typed_key {
                 0
+            } else if key.starts_with(&needle) {
+                1
             } else if key
                 .split(|c: char| !c.is_alphanumeric())
                 .any(|word| word.starts_with(&needle))
             {
-                1
-            } else if key.contains(&needle) {
                 2
+            } else if key.contains(&needle) {
+                3
             } else {
                 return None;
             };
@@ -199,6 +204,10 @@ pub enum KeyAction {
     Accept(usize),
     /// Close the list and keep the text.
     Close,
+    /// Enter with nothing highlighted: close the list, keep the text, and
+    /// let the entry have the key. A later Tab must not take a suggestion
+    /// for the name just confirmed.
+    KeepTyped,
     /// Not ours: the entry (or the dialog) handles the key.
     Pass,
 }
@@ -206,7 +215,7 @@ pub enum KeyAction {
 /// The keys of the suggestions (ADR 0031). Nothing is highlighted until
 /// Down or Up is pressed. **Tab** takes the highlighted suggestion, or the
 /// first one if none is highlighted. **Enter** takes only a highlighted
-/// suggestion; otherwise it is not ours, and the typed text stays as it is.
+/// suggestion; otherwise the typed text stays as it is and the list closes.
 /// **Escape** closes the list. Without a list showing, every key is the
 /// entry's own (Tab moves the focus on).
 pub fn key_action(key: SuggestKey, showing: bool, highlighted: Option<usize>) -> KeyAction {
@@ -216,7 +225,7 @@ pub fn key_action(key: SuggestKey, showing: bool, highlighted: Option<usize>) ->
     match key {
         SuggestKey::Down => KeyAction::Highlight(Move::Down),
         SuggestKey::Up => KeyAction::Highlight(Move::Up),
-        SuggestKey::Enter => highlighted.map_or(KeyAction::Pass, KeyAction::Accept),
+        SuggestKey::Enter => highlighted.map_or(KeyAction::KeepTyped, KeyAction::Accept),
         SuggestKey::Tab => KeyAction::Accept(highlighted.unwrap_or(0)),
         SuggestKey::Escape => KeyAction::Close,
     }
@@ -225,7 +234,7 @@ pub fn key_action(key: SuggestKey, showing: bool, highlighted: Option<usize>) ->
 /// What a screen reader is told when suggestions appear.
 pub fn suggestions_announcement(len: usize) -> String {
     format!(
-        "{}, Tab takes the first, or use the arrow keys to choose",
+        "{}: Tab takes the first, the arrow keys choose, Escape keeps what you typed",
         crate::ui::text::count(len, "suggestion", "suggestions")
     )
 }
@@ -315,6 +324,16 @@ mod tests {
         // Editing an earlier piece: only the other pieces are excluded.
         let found = suggestions(&all, "mat, maths", 3);
         assert_eq!(names(&found), ["math-art", "Mathématiques"]);
+    }
+
+    #[test]
+    fn the_name_typed_in_full_comes_first() {
+        // Two tags that differ only by an accent are two tags.
+        let all = tags(&["Economie", "Économie", "Économies"]);
+        let found = suggestions(&all, "Économie", 8);
+        assert_eq!(names(&found), ["Économie", "Economie", "Économies"]);
+        let found = suggestions(&all, "economie", 8);
+        assert_eq!(names(&found), ["Economie", "Économie", "Économies"]);
     }
 
     #[test]
@@ -410,11 +429,11 @@ mod tests {
         );
         assert_eq!(
             suggestions_announcement(1),
-            "1 suggestion, Tab takes the first, or use the arrow keys to choose"
+            "1 suggestion: Tab takes the first, the arrow keys choose, Escape keeps what you typed"
         );
         assert_eq!(
             suggestions_announcement(3),
-            "3 suggestions, Tab takes the first, or use the arrow keys to choose"
+            "3 suggestions: Tab takes the first, the arrow keys choose, Escape keeps what you typed"
         );
     }
 
@@ -430,7 +449,7 @@ mod tests {
     #[test]
     fn enter_takes_only_a_highlighted_suggestion() {
         use SuggestKey::Enter;
-        assert_eq!(key_action(Enter, true, None), KeyAction::Pass);
+        assert_eq!(key_action(Enter, true, None), KeyAction::KeepTyped);
         assert_eq!(key_action(Enter, true, Some(1)), KeyAction::Accept(1));
         assert_eq!(key_action(Enter, false, Some(1)), KeyAction::Pass);
     }
