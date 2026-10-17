@@ -8,6 +8,7 @@
 
 use adw::subclass::prelude::*;
 use gtk::glib;
+use gtk::prelude::*;
 
 use super::CardObject;
 use crate::ui::rows;
@@ -78,6 +79,12 @@ impl CardRow {
         imp.front_label.set_label(&preview);
         rows::label_menu_button(&imp.menu_button, &preview);
         imp.card_id.replace(item.card().id.clone());
+        // Rows are recycled, so this is set on every bind. A disabled
+        // widget action makes its menu item insensitive: the menu button's
+        // menu model resolves `row.*` through this row, as the actions
+        // installed in `class_init` are widget actions
+        // (`gtk_widget_action_set_enabled`, gtkwidget.c).
+        self.action_set_enabled("row.reset", reset_enabled(item.is_new()));
     }
 
     /// Forgets the card, before the row is recycled.
@@ -91,5 +98,22 @@ impl CardRow {
             return;
         }
         rows::forward_id(self, action, &id);
+    }
+}
+
+/// Whether Reset Progress is offered: not for a card that is already new,
+/// where a reset would only add a log entry that changes nothing.
+fn reset_enabled(is_new: bool) -> bool {
+    !is_new
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_card_with_progress_can_be_reset() {
+        assert!(!reset_enabled(true));
+        assert!(reset_enabled(false));
     }
 }

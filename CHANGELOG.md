@@ -23,6 +23,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - `fill_scratch_db --math`: a "Math" deck with the 15 formulas of the math spike, one per card, and a card with invalid LaTeX.
 - New dependencies: `ratex-parser`, `ratex-layout`, `ratex-types` (MIT) and `ratex-cairo` (MIT, vendored in `third_party/ratex-cairo` with `cairo-rs` bumped to 0.22, used through `[patch.crates-io]`), which also bring `ratex-katex-fonts` (the KaTeX fonts, SIL OFL 1.1; credited in the README, licence text in `LICENSES/`). About 60 more packages in all, and up to 5 MB in the binary.
 
+### Fixed
+- **Reset Progress is greyed out for a card that is already new** (no review since it was created or last reset, or only reviews that were undone). A reset of such a card used to add a log entry that changed nothing. `rappel-core`: `Store::reset_card` refuses a new card with the new `Error::CardAlreadyNew`, and nothing is written; `Store::new_card_ids(deck)` lists a deck's new cards in one query. If a menu is stale and the core refuses, the page says "This card has no progress to reset" and updates the row.
+
 ### Changed
 - **Export format version 2** (ADR 0017). Exports now hold tags, which cards have them, resets and undos, and the settings you changed. Importing into a database without decks (a new machine) brings the settings along. Importing into one with decks keeps its own settings, and the import dialog says so. The import dialog and its toast also count new tags.
 - **Files of format version 1 are no longer imported**: those are `.cards` files and exports of 0.2.0-alpha test builds. Choosing one says "the file was made by an early test version of Rappel and cannot be imported". From 1.0 on, every released format will stay importable.

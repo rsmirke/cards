@@ -67,12 +67,19 @@ impl Store {
     ///
     /// # Errors
     /// [`Error::CardNotFound`](crate::Error::CardNotFound) for a missing or
-    /// deleted card; id and SQLite errors. On error nothing is written.
+    /// deleted card; [`Error::CardAlreadyNew`](crate::Error::CardAlreadyNew)
+    /// if the card has no surviving review since it was created or last
+    /// reset; id and SQLite errors. On error nothing is written.
     pub fn reset_card(&mut self, card_id: &str, now: i64) -> Result<ReviewEvent> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         live_card(&tx, card_id)?;
+        // The cache has no row exactly when no review survives since the
+        // last surviving reset: a reset and an undo both rewrite it.
+        if matches!(read_card_state(&tx, card_id)?, CardState::New) {
+            return Err(Error::CardAlreadyNew(card_id.to_owned()));
+        }
         let reviewed_at = next_entry_time(&tx, &mut self.ids, card_id, now)?;
         let event = ReviewEvent {
             id: self.ids.next(now)?,

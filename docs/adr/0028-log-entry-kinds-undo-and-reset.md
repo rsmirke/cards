@@ -43,3 +43,7 @@ Resets and undos live in the same table as reviews, not in tables of their own, 
 - The export format changes (version 2, ADR 0017): every entry carries `kind`, `grade` (null unless a review) and `undoes`.
 - The app does not offer undo or reset yet. That comes with the UI slice (Ctrl+Z on the review page, Reset Progress in the card menu, #38).
 - A reset card keeps its history in the log, and in an export. Stats will need the same rule (count only surviving entries) when they come.
+
+## Addendum: a new card cannot be reset
+
+`reset_card` refuses a card that is already new (no surviving review since it was created or last reset) with `Error::CardAlreadyNew`, and writes nothing: such a reset would only add a log entry that changes nothing. The deck page greys out Reset Progress for those cards. Logs that already hold such a reset (imports, earlier builds) are still valid and replay as before.

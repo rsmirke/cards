@@ -2,6 +2,7 @@
 //! and never sees SQL or rusqlite (ADR 0011).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -263,6 +264,11 @@ impl AppState {
     #[cfg(test)]
     pub fn review_events(&self, card_id: &str) -> rappel_core::Result<Vec<ReviewEvent>> {
         self.0.store.borrow().review_events(card_id)
+    }
+
+    /// The ids of a deck's new cards (see [`Store::new_card_ids`]).
+    pub fn new_card_ids(&self, deck_id: &str) -> rappel_core::Result<HashSet<String>> {
+        self.0.store.borrow().new_card_ids(deck_id)
     }
 
     /// A card's scheduling state (see [`Store::card_state`]).
