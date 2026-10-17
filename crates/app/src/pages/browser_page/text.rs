@@ -1,5 +1,5 @@
 //! Every text and small decision of the All Cards page that needs no GTK:
-//! row captions, counts, toast texts, which empty state to show, what
+//! row captions and labels, counts, the empty states, toast texts, which empty state to show, what
 //! Escape does. Pure, so it is unit-tested (SPEC §4.6, ADR 0036).
 
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
@@ -27,26 +27,19 @@ fn capitalised(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The line under a card's front: "Maths · Due in 3 days · algebra, hard".
-/// Compact rows (a phone) leave the tags out. `tags_line` is already one
-/// plain line (`card_object::tags_line`).
-pub fn caption(deck: &str, status: &str, tags_line: &str, compact: bool) -> String {
-    let deck = deck.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut parts = vec![deck.as_str(), status];
-    if !compact && !tags_line.is_empty() {
-        parts.push(tags_line);
-    }
-    parts.join(" · ")
+/// The third line of an All Cards row: "Maths · Due in 3 days". The tags
+/// are pills on the line above (`widgets::card_row`).
+pub fn caption(deck: &str, status: &str) -> String {
+    format!("{} · {status}", one_line(deck))
 }
 
-/// What a screen reader says for a row. While choosing cards it also says
-/// whether the row is chosen.
-pub fn row_label(front: &str, caption: &str, selected: Option<bool>) -> String {
-    let base = if caption.is_empty() {
-        front.to_owned()
-    } else {
-        format!("{front}, {caption}")
-    };
+/// What a screen reader says for an All Cards row: the card as the deck
+/// page says it (`card_row::text::row_label`, without "suspended", which
+/// the status says), then the deck and the status, and, while choosing
+/// cards, whether the row is chosen: "2 + 2, back: 4, deck: Maths, Due in
+/// 3 days, selected".
+pub fn row_label(card: &str, deck: &str, status: &str, selected: Option<bool>) -> String {
+    let base = format!("{card}, deck: {}, {status}", one_line(deck));
     match selected {
         Some(true) => format!("{base}, selected"),
         Some(false) => format!("{base}, not selected"),
@@ -63,12 +56,14 @@ pub fn count_text(n: usize) -> String {
     }
 }
 
-/// The action bar's title: "3 selected", "None selected".
+/// The header's title in selection mode (HIG, "Selection mode": the
+/// heading says how many items are chosen): "3 Selected", or "Select
+/// Cards" before the first.
 pub fn selection_title(n: usize) -> String {
     if n == 0 {
-        "None selected".to_owned()
+        "Select Cards".to_owned()
     } else {
-        format!("{} selected", group_digits(n))
+        format!("{} Selected", group_digits(n))
     }
 }
 
@@ -97,14 +92,56 @@ pub fn suspend_choice(suspended: impl IntoIterator<Item = bool>) -> SuspendChoic
 }
 
 /// What the list area shows when it has no row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Empty {
     /// There are rows.
+    #[default]
     No,
     /// The collection has no card at all.
     NoCards,
     /// A search or filter matches nothing.
     NoResults,
+}
+
+/// The status page of an [`Empty`] state: icon, title and its one
+/// sentence.
+pub fn empty_page(empty: Empty) -> Option<(&'static str, &'static str, &'static str)> {
+    match empty {
+        Empty::No => None,
+        Empty::NoCards => Some((
+            "document-new-symbolic",
+            "No Cards Yet",
+            "Cards you add to your decks will show up here",
+        )),
+        Empty::NoResults => Some((
+            "edit-find-symbolic",
+            "No Results Found",
+            "Try a different search or other filters",
+        )),
+    }
+}
+
+/// The button of the "No Cards Yet" state: back to the deck list, where
+/// decks are made and cards added.
+pub const GO_TO_DECKS: &str = "_Go to Decks";
+
+/// The button of the "No Results Found" state, naming what it clears:
+/// "Clear Search", "Clear Filters" or "Clear Search and Filters".
+pub fn clear_label(searched: bool, filtered: bool) -> &'static str {
+    match (searched, filtered) {
+        (true, false) => "_Clear Search",
+        (false, true) => "_Clear Filters",
+        _ => "_Clear Search and Filters",
+    }
+}
+
+/// Whether `query` has words, and whether it has a filter (deck, tag or
+/// state), for [`clear_label`].
+pub fn searched_and_filtered(query: &BrowseQuery) -> (bool, bool) {
+    (
+        !query.text.trim().is_empty(),
+        query.deck_id.is_some() || query.tag_id.is_some() || query.state.is_some(),
+    )
 }
 
 /// `shown` rows came back; `filtered` says whether a search text or a filter
@@ -158,10 +195,8 @@ pub fn state_filter(selected: u32) -> Option<StateFilter> {
 
 /// Whether `query` asks for anything (words or a filter).
 pub fn is_filtered(query: &BrowseQuery) -> bool {
-    !query.text.trim().is_empty()
-        || query.deck_id.is_some()
-        || query.tag_id.is_some()
-        || query.state.is_some()
+    let (searched, filtered) = searched_and_filtered(query);
+    searched || filtered
 }
 
 /// The note after an action found that a card of the list was gone.
@@ -276,31 +311,54 @@ mod tests {
     }
 
     #[test]
-    fn a_caption_joins_deck_status_and_tags_but_not_on_a_phone() {
-        assert_eq!(
-            caption("Maths", "New", "algebra, hard", false),
-            "Maths · New · algebra, hard"
-        );
-        assert_eq!(caption("Maths", "New", "", false), "Maths · New");
-        assert_eq!(caption("Maths", "New", "algebra", true), "Maths · New");
-        assert_eq!(caption("a\n b", "New", "", true), "a b · New");
+    fn a_caption_says_the_deck_and_the_status() {
+        assert_eq!(caption("Maths", "New"), "Maths · New");
+        assert_eq!(caption("a\n b", "Due now"), "a b · Due now");
     }
 
     #[test]
-    fn a_row_is_read_with_its_selection() {
+    fn a_row_is_read_with_its_deck_status_and_selection() {
         assert_eq!(
-            row_label("2 + 2", "Maths · New", None),
-            "2 + 2, Maths · New"
-        );
-        assert_eq!(row_label("2 + 2", "", None), "2 + 2");
-        assert_eq!(
-            row_label("2 + 2", "Maths", Some(true)),
-            "2 + 2, Maths, selected"
+            row_label("2 + 2, back: 4", "Maths", "New", None),
+            "2 + 2, back: 4, deck: Maths, New"
         );
         assert_eq!(
-            row_label("2 + 2", "Maths", Some(false)),
-            "2 + 2, Maths, not selected"
+            row_label("2 + 2", "a\n b", "Suspended", Some(true)),
+            "2 + 2, deck: a b, Suspended, selected"
         );
+        assert_eq!(
+            row_label("2 + 2", "Maths", "New", Some(false)),
+            "2 + 2, deck: Maths, New, not selected"
+        );
+    }
+
+    #[test]
+    fn empty_states_have_a_title_a_sentence_and_a_button() {
+        assert_eq!(empty_page(Empty::No), None);
+        let (icon, title, body) = empty_page(Empty::NoCards).unwrap();
+        assert_eq!(title, "No Cards Yet");
+        assert_eq!(body, "Cards you add to your decks will show up here");
+        assert!(icon.ends_with("-symbolic"));
+        let (_, title, body) = empty_page(Empty::NoResults).unwrap();
+        assert_eq!(title, "No Results Found");
+        assert_eq!(body, "Try a different search or other filters");
+        assert_eq!(GO_TO_DECKS, "_Go to Decks");
+    }
+
+    #[test]
+    fn the_clear_button_names_what_it_clears() {
+        let mut q = BrowseQuery {
+            text: "x".to_owned(),
+            ..BrowseQuery::default()
+        };
+        assert_eq!(searched_and_filtered(&q), (true, false));
+        assert_eq!(clear_label(true, false), "_Clear Search");
+        q.state = Some(StateFilter::New);
+        assert_eq!(searched_and_filtered(&q), (true, true));
+        assert_eq!(clear_label(true, true), "_Clear Search and Filters");
+        q.text = " ".to_owned();
+        assert_eq!(searched_and_filtered(&q), (false, true));
+        assert_eq!(clear_label(false, true), "_Clear Filters");
     }
 
     #[test]
@@ -308,9 +366,9 @@ mod tests {
         assert_eq!(count_text(0), "No cards");
         assert_eq!(count_text(1), "1 card");
         assert_eq!(count_text(5_000), "5,000 cards");
-        assert_eq!(selection_title(0), "None selected");
-        assert_eq!(selection_title(3), "3 selected");
-        assert_eq!(selection_title(1_200), "1,200 selected");
+        assert_eq!(selection_title(0), "Select Cards");
+        assert_eq!(selection_title(3), "3 Selected");
+        assert_eq!(selection_title(1_200), "1,200 Selected");
     }
 
     #[test]

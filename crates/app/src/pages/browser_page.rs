@@ -22,7 +22,7 @@ use crate::state::AppState;
 use crate::ui::focus::index_after_removal;
 use crate::ui::toast::{info_toast, show_error, show_toast_from, undo_toast};
 use crate::ui::{dropdown, init_once, nav};
-use crate::widgets::{BrowseItem, BrowserRow};
+use crate::widgets::{BrowseItem, CardRow};
 use crate::window::RappelWindow;
 
 pub mod selection;
@@ -52,7 +52,15 @@ mod imp {
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
         #[template_child]
-        pub select_button: TemplateChild<gtk::ToggleButton>,
+        pub title_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub selection_title: TemplateChild<adw::WindowTitle>,
+        #[template_child]
+        pub select_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub select_all_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub deck_filter: TemplateChild<gtk::DropDown>,
         #[template_child]
@@ -62,7 +70,9 @@ mod imp {
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
-        pub clear_button: TemplateChild<gtk::Button>,
+        pub empty_page: TemplateChild<adw::StatusPage>,
+        #[template_child]
+        pub empty_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub tags_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
@@ -71,8 +81,6 @@ mod imp {
         pub card_list: TemplateChild<gtk::ListView>,
         #[template_child]
         pub action_bar: TemplateChild<gtk::ActionBar>,
-        #[template_child]
-        pub selection_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub suspend_button: TemplateChild<gtk::Button>,
         #[template_child]
@@ -93,6 +101,8 @@ mod imp {
         pub editing: Rc<Cell<bool>>,
         /// The card to focus when the editor closes: the one last saved.
         pub focus_after_edit: RefCell<Option<String>>,
+        /// What the list area shows (the rows, or which status page).
+        pub empty: Cell<super::Empty>,
         /// The filters are being rebuilt: their changes are not searches.
         pub quiet: Cell<bool>,
         /// Something was written here: the other pages read it on leaving.
@@ -140,7 +150,14 @@ mod imp {
             klass.install_action("browser.delete-selected", None, |page, _, _| {
                 page.run_selected(super::Bulk::Delete);
             });
-            klass.install_action("browser.clear", None, |page, _, _| page.clear_filters());
+            // The header in and out of selection mode.
+            klass.install_action("browser.choose", None, |page, _, _| page.start_choosing());
+            klass.install_action("browser.cancel", None, |page, _, _| page.stop_choosing());
+            klass.install_action("browser.select-all", None, |page, _, _| page.select_all());
+            // The status page's button: back to the decks, or clear.
+            klass.install_action("browser.empty-action", None, |page, _, _| {
+                page.empty_action();
+            });
         }
 
         fn instance_init(obj: &glib::subclass::InitializingObject<Self>) {
@@ -258,6 +275,9 @@ impl BrowserPage {
         imp.card_list
             .set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
         imp.card_list.set_factory(Some(&page.row_factory()));
+        for filter in [&*imp.deck_filter, &*imp.tag_filter, &*imp.state_filter] {
+            dropdown::shrinkable(filter);
+        }
         init_once(&imp.state, state);
         init_once(&imp.items, store);
         page.load_filters(deck_id)?;
@@ -266,9 +286,13 @@ impl BrowserPage {
         Ok(page)
     }
 
-    /// Puts the keyboard in the search field (Ctrl+F).
+    /// Puts the keyboard in the search field (Ctrl+F). Not while cards are
+    /// being chosen: the header shows the selection then, and Cancel or
+    /// Escape comes first (the choice is not dropped by a shortcut).
     pub fn focus_search(&self) {
-        self.imp().search_entry.grab_focus();
+        if !self.selecting() {
+            self.imp().search_entry.grab_focus();
+        }
     }
 
     /// Reads the rows again, after an import.
@@ -348,15 +372,32 @@ impl BrowserPage {
             self,
             move |_, position| page.activate(position)
         ));
-        imp.select_button.connect_toggled(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |button| {
-                if !page.imp().quiet.get() {
-                    page.choose_mode(button.is_active());
-                }
+        // Typing anywhere on the page searches: the field takes the keys
+        // that make text and that no widget under the focus used (they are
+        // taken in the bubble phase, so the list's own keys and the
+        // drop-downs' search fields come first; GtkSearchEntry docs,
+        // `set_key_capture_widget`, a method since GTK 4.0, unlike the
+        // property, which is 4.22). Stopped while cards are being chosen,
+        // when the field is not shown (`update_selection_ui`).
+        imp.search_entry.set_key_capture_widget(Some(self));
+        // The captured keys go into the field without moving the focus
+        // there, so the next Backspace or arrow would act on the list.
+        // Move it, without selecting the text, so typing carries on in the
+        // field with its caret after the letter just typed.
+        imp.search_entry.connect_changed(|entry| {
+            let Some(root) = entry.root() else {
+                return;
+            };
+            let in_field = root.focus().is_some_and(|focus| {
+                focus.is_ancestor(entry) || &focus == entry.upcast_ref::<gtk::Widget>()
+            });
+            if !in_field
+                && !entry.text().is_empty()
+                && let Some(text) = entry.delegate().and_downcast::<gtk::Text>()
+            {
+                text.grab_focus_without_selecting();
             }
-        ));
+        });
         self.connect_hidden(|page| {
             // The deck pages and the deck list read what was written here
             // (the page may be about to go, so it is the window's to ask).
@@ -393,12 +434,16 @@ impl BrowserPage {
                 if ctrl && matches!(key, gtk::gdk::Key::a | gtk::gdk::Key::A) {
                     page.select_all();
                     glib::Propagation::Stop
-                } else if key == gtk::gdk::Key::space
-                    && !ctrl
-                    && page.imp().selection.borrow().active()
-                    && let Some(id) = page.focused_card()
-                {
-                    page.toggle(&id);
+                } else if key == gtk::gdk::Key::space && !ctrl && page.row_has_focus() {
+                    // Space on a row (not on its menu button) chooses the
+                    // card while choosing, and otherwise does nothing: it
+                    // must not reach the search field's key capture and
+                    // start a search with a space.
+                    if page.imp().selection.borrow().active()
+                        && let Some(id) = page.focused_card()
+                    {
+                        page.toggle(&id);
+                    }
                     glib::Propagation::Stop
                 } else {
                     glib::Propagation::Proceed
@@ -448,17 +493,17 @@ impl BrowserPage {
     }
 
     /// Escape in an empty search field leaves it: for the list, or the
-    /// button of the empty state; with nothing to focus the page goes back.
+    /// button of the empty state.
     fn leave_search(&self) {
         let imp = self.imp();
         match imp.content_stack.visible_child_name().as_deref() {
             Some("list") => {
                 imp.card_list.grab_focus();
             }
-            Some("none") => {
-                imp.clear_button.grab_focus();
+            Some("empty") => {
+                imp.empty_button.grab_focus();
             }
-            _ => nav::pop(self),
+            _ => {}
         }
     }
 
@@ -471,7 +516,7 @@ impl BrowserPage {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
                 return;
             };
-            let row = BrowserRow::default();
+            let row = CardRow::for_browser();
             if let Some(page) = page.upgrade() {
                 page.bind_property("compact", &row, "compact")
                     .sync_create()
@@ -488,15 +533,15 @@ impl BrowserPage {
             };
             if let (Some(card), Some(row)) = (
                 item.item().and_downcast::<BrowseItem>(),
-                item.child().and_downcast::<BrowserRow>(),
+                item.child().and_downcast::<CardRow>(),
             ) {
-                row.bind(&card, item);
+                row.bind_browse(&card, item);
             }
         });
         factory.connect_unbind(|_, item| {
             if let Some(row) = item
                 .downcast_ref::<gtk::ListItem>()
-                .and_then(|item| item.child().and_downcast::<BrowserRow>())
+                .and_then(|item| item.child().and_downcast::<CardRow>())
             {
                 row.unbind();
             }
@@ -602,12 +647,23 @@ impl BrowserPage {
                 .collect()
         };
         store.splice(0, store.n_items(), &items);
-        let page = match text::empty_state(items.len(), text::is_filtered(&query)) {
-            Empty::No => "list",
-            Empty::NoCards => "empty",
-            Empty::NoResults => "none",
-        };
-        imp.content_stack.set_visible_child_name(page);
+        let empty = text::empty_state(items.len(), text::is_filtered(&query));
+        imp.empty.set(empty);
+        match text::empty_page(empty) {
+            None => imp.content_stack.set_visible_child_name("list"),
+            Some((icon, title, description)) => {
+                imp.empty_page.set_icon_name(Some(icon));
+                imp.empty_page.set_title(title);
+                imp.empty_page.set_description(Some(description));
+                imp.empty_button.set_label(if empty == Empty::NoCards {
+                    text::GO_TO_DECKS
+                } else {
+                    let (searched, filtered) = text::searched_and_filtered(&query);
+                    text::clear_label(searched, filtered)
+                });
+                imp.content_stack.set_visible_child_name("empty");
+            }
+        }
         imp.count_label.set_label(&text::count_text(items.len()));
         self.update_selection_ui();
         Ok(())
@@ -644,6 +700,13 @@ impl BrowserPage {
             .collect()
     }
 
+    /// Whether a row itself has the keyboard focus (not a button in it).
+    fn row_has_focus(&self) -> bool {
+        let list = &self.imp().card_list;
+        let focused = list.root().and_then(|root| root.focus());
+        focused.is_some() && focused == list.focus_child()
+    }
+
     /// The card whose row has the keyboard focus.
     fn focused_card(&self) -> Option<String> {
         let row = self
@@ -651,7 +714,7 @@ impl BrowserPage {
             .card_list
             .focus_child()?
             .first_child()
-            .and_downcast::<BrowserRow>()?;
+            .and_downcast::<CardRow>()?;
         let id = row.card_id();
         (!id.is_empty()).then_some(id)
     }
@@ -701,6 +764,33 @@ impl BrowserPage {
         self.update_selection_ui();
     }
 
+    /// The Select button: start choosing. The button hides, so the
+    /// keyboard goes to the list (or stays where it was if it is empty).
+    fn start_choosing(&self) {
+        self.choose_mode(true);
+        let imp = self.imp();
+        if imp.content_stack.visible_child_name().as_deref() == Some("list") {
+            imp.card_list.grab_focus();
+        }
+    }
+
+    /// Cancel: stop choosing (the keyboard goes to the Select button that
+    /// takes its place, `update_selection_ui`).
+    fn stop_choosing(&self) {
+        self.choose_mode(false);
+    }
+
+    /// The status page's button: on "No Cards Yet" back to the deck list
+    /// (where decks are made and cards added), on "No Results Found" clear
+    /// the search and filters.
+    fn empty_action(&self) {
+        match self.imp().empty.get() {
+            Empty::NoCards => nav::pop(self),
+            Empty::NoResults => self.clear_filters(),
+            Empty::No => {}
+        }
+    }
+
     /// A long press on a row: start choosing with this card.
     fn press(&self, id: &str) {
         if !self.imp().selection.borrow().active() {
@@ -737,12 +827,28 @@ impl BrowserPage {
             let selection = imp.selection.borrow();
             (selection.active(), selection.len())
         };
-        self.set_selecting(active);
-        imp.quiet.set(true);
-        imp.select_button.set_active(active);
-        imp.quiet.set(false);
-        imp.action_bar.set_revealed(active);
-        imp.selection_label.set_label(&text::selection_title(n));
+        if self.selecting() != active {
+            // A header button about to hide must not keep the keyboard: it
+            // goes to the Select button that takes its place.
+            let header_focus = imp.select_all_button.has_focus() || imp.cancel_button.has_focus();
+            self.set_selecting(active);
+            // The header of selection mode (HIG): how many are chosen, Select
+            // All and Cancel; Back hides and Escape does not go back
+            // (`AdwNavigationPage:can-pop` docs), so Escape leaves the mode.
+            imp.title_stack
+                .set_visible_child_name(if active { "selection" } else { "search" });
+            imp.select_button.set_visible(!active);
+            imp.select_all_button.set_visible(active);
+            imp.cancel_button.set_visible(active);
+            self.set_can_pop(!active);
+            imp.search_entry
+                .set_key_capture_widget(if active { None } else { Some(self) });
+            imp.action_bar.set_revealed(active);
+            if header_focus && !active {
+                imp.select_button.grab_focus();
+            }
+        }
+        imp.selection_title.set_title(&text::selection_title(n));
         for action in [
             "browser.move",
             "browser.add-tag",
@@ -1280,8 +1386,19 @@ mod tests {
             page.search();
             assert_eq!(
                 imp.content_stack.visible_child_name().as_deref(),
-                Some("none")
+                Some("empty")
             );
+            assert_eq!(imp.empty_page.title(), "No Results Found");
+            assert_eq!(
+                imp.empty_button.label().as_deref(),
+                Some("_Clear Search and Filters")
+            );
+            // Its button clears both.
+            page.empty_action();
+            assert_eq!(shown(&page).len(), 4);
+            imp.search_entry.set_text("nothing like it");
+            page.search();
+            assert_eq!(imp.empty_button.label().as_deref(), Some("_Clear Search"));
 
             page.clear_filters();
             assert_eq!(shown(&page).len(), 4);
@@ -1306,10 +1423,13 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let state = AppState::open(tmp.path().join("data")).unwrap();
             let page = page_over(&state, None);
+            let imp = page.imp();
             assert_eq!(
-                page.imp().content_stack.visible_child_name().as_deref(),
+                imp.content_stack.visible_child_name().as_deref(),
                 Some("empty")
             );
+            assert_eq!(imp.empty_page.title(), "No Cards Yet");
+            assert_eq!(imp.empty_button.label().as_deref(), Some("_Go to Decks"));
         });
     }
 
@@ -1321,15 +1441,21 @@ mod tests {
             let imp = page.imp();
             page.choose_mode(true);
             assert!(imp.action_bar.is_revealed());
-            assert_eq!(imp.selection_label.label(), "None selected");
+            assert_eq!(imp.selection_title.title(), "Select Cards");
+            assert!(imp.cancel_button.is_visible() && !imp.select_button.is_visible());
+            assert!(
+                !page.can_pop(),
+                "Escape leaves selection mode, not the page"
+            );
             page.toggle(&ids[0]);
             page.toggle(&ids[1]);
-            assert_eq!(imp.selection_label.label(), "2 selected");
+            assert_eq!(imp.selection_title.title(), "2 Selected");
             assert_eq!(page.suspend_choice(), SuspendChoice::Suspend);
 
             page.suspend_selected();
             assert!(!imp.selection.borrow().active());
             assert!(!imp.action_bar.is_revealed());
+            assert!(page.can_pop() && imp.select_button.is_visible());
             let suspended = |state: &AppState| {
                 state
                     .browse(
@@ -1350,6 +1476,35 @@ mod tests {
             assert_eq!(page.suspend_choice(), SuspendChoice::Unsuspend);
             page.toggle(&ids[2]);
             assert_eq!(page.suspend_choice(), SuspendChoice::Suspend);
+        });
+    }
+
+    #[test]
+    fn the_header_buttons_enter_and_leave_selection_mode() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, state, _, _) = state_with_cards();
+            let page = page_over(&state, None);
+            let imp = page.imp();
+            let window = gtk::Window::new();
+            window.set_child(Some(&page));
+            window.present();
+            imp.select_button.emit_clicked();
+            assert!(page.selecting());
+            assert_eq!(
+                imp.title_stack.visible_child_name().as_deref(),
+                Some("selection")
+            );
+            imp.select_all_button.emit_clicked();
+            assert_eq!(page.chosen_ids().len(), 4);
+            assert_eq!(imp.selection_title.title(), "4 Selected");
+            imp.cancel_button.emit_clicked();
+            assert!(!page.selecting());
+            assert_eq!(page.chosen_ids().len(), 0);
+            assert_eq!(
+                imp.title_stack.visible_child_name().as_deref(),
+                Some("search")
+            );
+            window.destroy();
         });
     }
 
@@ -1492,7 +1647,7 @@ mod tests {
     }
 
     fn count_rows(widget: &gtk::Widget) -> usize {
-        let mut n = usize::from(widget.is::<BrowserRow>());
+        let mut n = usize::from(widget.is::<CardRow>());
         let mut child = widget.first_child();
         while let Some(c) = child {
             n += count_rows(&c);
