@@ -40,8 +40,13 @@ template $RappelDeckRow: Gtk.ListBoxRow {
         ellipsize: end;
         use-markup: false;
 
+        // `heading` makes the name the row's primary element (the
+        // brief's "deck name prominent"); a libadwaita class, no own font.
+        // Not also `title`: libadwaita's `row > box.header > box.title >
+        // .title { font-weight: inherit; }` is more specific than
+        // `.heading` and would undo it.
         styles [
-          "title",
+          "heading",
         ]
       }
 
