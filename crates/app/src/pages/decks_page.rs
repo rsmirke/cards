@@ -451,14 +451,16 @@ impl DecksPage {
     /// [`Self::reload`], with a failure in the page's [`ErrorSlot`]: the
     /// list is read again on every activation of the window and by a
     /// timer, so a lasting failure replaces its toast instead of piling
-    /// them up.
+    /// them up, and a later success takes it away.
     fn reload_or_toast(&self, focus: Focus<'_>) {
-        if let Err(err) = self.reload(focus) {
-            self.imp().read_errors.show(
+        match self.reload(focus) {
+            // A "could not be read" toast from an earlier try is stale now.
+            Ok(()) => self.imp().read_errors.clear(),
+            Err(err) => self.imp().read_errors.show(
                 self,
                 "reading the decks",
                 &format!("The decks could not be read: {err}"),
-            );
+            ),
         }
     }
 

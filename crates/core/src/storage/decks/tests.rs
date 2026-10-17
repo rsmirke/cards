@@ -815,3 +815,151 @@ mod study_counts {
         assert_next_matches(&store, later);
     }
 }
+
+// --- The deck list's counts are a second implementation of study_input ---
+
+mod counts_equal_study_input {
+    use std::time::Duration;
+
+    use proptest::prelude::*;
+
+    use super::{DAY_MS, T0};
+    use crate::domain::{CardState, Grade, Phase};
+    use crate::storage::Store;
+    use crate::storage::review::deck_counts_in;
+
+    const CARDS: usize = 12;
+
+    /// One random write: an answer, a suspension, an undo of the card's
+    /// latest entry, a reset or a deletion.
+    #[derive(Debug, Clone, Copy)]
+    enum Op {
+        Pass,
+        Fail,
+        Suspend,
+        Unsuspend,
+        UndoLatest,
+        Reset,
+        Delete,
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            3 => Just(Op::Pass),
+            2 => Just(Op::Fail),
+            1 => Just(Op::Suspend),
+            1 => Just(Op::Unsuspend),
+            1 => Just(Op::UndoLatest),
+            1 => Just(Op::Reset),
+            1 => Just(Op::Delete),
+        ]
+    }
+
+    /// The deck's cards that would be studied now without the daily
+    /// limits, counted card by card through the public API: new cards and
+    /// due reviews, neither suspended.
+    fn uncut_totals(store: &Store, deck: &str, now: i64) -> (usize, usize) {
+        let mut new = 0;
+        let mut due = 0;
+        for card in store.list_cards(deck).unwrap() {
+            if card.suspended {
+                continue;
+            }
+            match store.card_state(&card.id).unwrap() {
+                CardState::New => new += 1,
+                CardState::Scheduled(s) if s.phase == Phase::Review && s.due_at <= now => {
+                    due += 1;
+                }
+                CardState::Scheduled(_) => {}
+            }
+        }
+        (new, due)
+    }
+
+    proptest! {
+        // About 0.1 s per 16 cases in a debug build.
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// `deck_counts_in` (the deck list) and `study_input` (the deck
+        /// page) agree after any history, at any time, under any limits
+        /// (ADR 0014, 0041).
+        #[test]
+        fn deck_counts_equal_study_input(
+            ops in prop::collection::vec((op(), 0..CARDS, 0_i64..3_000), 0..60),
+            max_new in 0_u32..6,
+            max_reviews in 0_u32..6,
+            probes in prop::collection::vec((0_i64..40_000, 0_i64..24), 1..6),
+        ) {
+            let mut store = Store::in_memory();
+            store.set_max_new_per_day(max_new).unwrap();
+            store.set_max_reviews_per_day(max_reviews).unwrap();
+            let a = store.create_deck_at("A", T0).unwrap().id;
+            let b = store.create_deck_at("B", T0).unwrap().id;
+            let cards: Vec<String> = (0..CARDS)
+                .map(|i| {
+                    let deck = if i % 3 == 0 { &b } else { &a };
+                    store.add_card_at(deck, &format!("q{i}"), "a", T0).unwrap().id
+                })
+                .collect();
+            let mut latest: Vec<Option<String>> = vec![None; CARDS];
+            let mut t = T0;
+            for (op, i, minutes) in ops {
+                t += minutes * 60_000;
+                let card = &cards[i];
+                let one = std::slice::from_ref(card);
+                // Writes on a deleted card fail; that is part of the
+                // history too.
+                match op {
+                    Op::Pass | Op::Fail => {
+                        let grade = if matches!(op, Op::Pass) { Grade::Pass } else { Grade::Fail };
+                        if let Ok(e) = store.record_review(card, grade, Duration::from_secs(1), t) {
+                            latest[i] = Some(e.id);
+                        }
+                    }
+                    Op::Suspend => { let _ = store.set_suspended(one, true); }
+                    Op::Unsuspend => { let _ = store.set_suspended(one, false); }
+                    Op::UndoLatest => {
+                        if let Some(e) = latest[i].take() {
+                            let _ = store.undo(card, &e, t);
+                        }
+                    }
+                    Op::Reset => {
+                        if let Ok(e) = store.reset_card(card, t) {
+                            latest[i] = Some(e.id);
+                        }
+                    }
+                    Op::Delete => { let _ = store.delete_card_at(card, t); }
+                }
+            }
+            for (minutes, hours_ago) in probes {
+                let now = T0 + minutes * 60_000;
+                let day_start = (now - (now - T0).rem_euclid(DAY_MS) - hours_ago * 3_600_000).min(now);
+                for deck in [&a, &b] {
+                    let input = store.study_input(deck, now, day_start).unwrap();
+                    let counts = deck_counts_in(&store.conn, deck, now, day_start).unwrap();
+                    prop_assert_eq!(counts.new as usize, input.new.len());
+                    prop_assert_eq!(counts.reviews as usize, input.reviews.len());
+                    prop_assert_eq!(counts.steps as usize, input.steps.len());
+                    prop_assert_eq!(counts.next_change_at, store.next_study_change(deck, now).unwrap());
+                    if let Some(at) = counts.next_change_at {
+                        prop_assert!(at > now);
+                    }
+                    let live = store.list_cards(deck).unwrap();
+                    prop_assert_eq!(counts.live as usize, live.len());
+                    prop_assert_eq!(counts.suspended as usize, live.iter().filter(|c| c.suspended).count());
+                    let (new_total, due_total) = uncut_totals(&store, deck, now);
+                    prop_assert_eq!(
+                        counts.held_back as usize,
+                        (new_total - input.new.len()) + (due_total - input.reviews.len())
+                    );
+                }
+                // And `list_decks` passes them on unchanged.
+                for s in store.list_decks(now, day_start).unwrap() {
+                    let input = store.study_input(&s.deck.id, now, day_start).unwrap();
+                    prop_assert_eq!(s.new_count as usize, input.new.len());
+                    prop_assert_eq!(s.due_count as usize, input.reviews.len() + input.steps.len());
+                }
+            }
+        }
+    }
+}

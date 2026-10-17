@@ -54,7 +54,7 @@ The list is read again **in place** (same decks in the same order: each row upda
 - when the window becomes active, while the list is on top: GLib timeouts use the monotonic clock, which does not advance during a suspend, so the timer alone would be late after a laptop wakes;
 - by a `ui::debounce` timer at the next change (any deck's `next_change_at` or the next study day), but no later than its text stays right: a minute while a row counts minutes, ten minutes while one counts hours, an hour otherwise (as the deck page, so a changed clock or time zone is noticed). It is never under a second. Under another page the timer does nothing; `shown` reads the list on the way back. (`refresh_delay_ms`, unit-tested.)
 
-Each read is one `list_decks`: about 12 ms at 5,000 cards in a release build and 50 ms in a debug build, at most once a minute.
+Each read is one `list_decks`: at 5,000 cards (2,000 due), 28 ms in a debug build on a loaded machine (where phase-1's took 42 ms), at most once a minute. A failed read shows one toast in an `ErrorSlot`, replaced by the next failure and dismissed by the next success.
 
 ### The empty state
 

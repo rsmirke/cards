@@ -376,7 +376,7 @@ pub(super) fn deck_counts_in(
     let (reviews_today, new_today) = today_counts_in(conn, deck_id, day_start)?;
     // Phases are our own constant strings, never user input.
     let review = Phase::Review.as_str();
-    let steps = format!(
+    let step_phases = format!(
         "'{}', '{}'",
         Phase::Learning.as_str(),
         Phase::Relearning.as_str()
@@ -395,8 +395,8 @@ pub(super) fn deck_counts_in(
                         coalesce(sum(c.suspended = 0 AND s.card_id IS NULL), 0),
                         coalesce(sum(c.suspended = 0 AND s.phase = '{review}'
                                      AND s.due_at <= ?2), 0),
-                        coalesce(sum(c.suspended = 0 AND s.phase IN ({steps})
-                                     AND s.due_at <= ?2 + ?3), 0),
+                        coalesce(sum(c.suspended = 0 AND s.phase IN ({step_phases})
+                                     AND s.due_at <= ?4), 0),
                         min(CASE WHEN c.suspended <> 0 THEN NULL
                                  WHEN s.phase = '{review}' AND s.due_at > ?2 THEN s.due_at
                                  WHEN s.phase <> '{review}' AND s.due_at - ?3 > ?2
@@ -404,7 +404,7 @@ pub(super) fn deck_counts_in(
                  FROM cards c LEFT JOIN card_schedule s ON s.card_id = c.id
                  WHERE c.deck_id = ?1 AND c.deleted_at IS NULL"
         ),
-        params![deck_id, now, EARLY_MS],
+        params![deck_id, now, EARLY_MS, now.saturating_add(EARLY_MS)],
         |r| {
             Ok((
                 r.get(0)?,
