@@ -416,7 +416,14 @@ impl BrowserPage {
                 let imp = page.imp();
                 let in_popover = keys.current_event().and_then(|event| event.surface())
                     != imp.content_stack.native().and_then(|n| n.surface());
-                if !text::types_into_search(key, modifiers, in_popover, page.selecting()) {
+                let search_empty = imp.search_entry.text().is_empty();
+                if !text::types_into_search(
+                    key,
+                    modifiers,
+                    in_popover,
+                    page.selecting(),
+                    search_empty,
+                ) {
                     return glib::Propagation::Proceed;
                 }
                 let Some(field) = imp.search_entry.delegate().and_downcast::<gtk::Text>() else {

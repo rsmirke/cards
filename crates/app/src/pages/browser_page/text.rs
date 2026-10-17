@@ -1,6 +1,6 @@
 //! Every text and small decision of the All Cards page that needs no GTK:
 //! row captions and labels, counts, toast texts, which empty state to show
-//! and what it says, what Escape and Space do. Pure, so it is unit-tested (SPEC §4.6, ADR 0036).
+//! and what it says, and what Escape, Space and typing in the list do. Pure, so it is unit-tested (SPEC §4.6, ADR 0036).
 
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
 
@@ -189,19 +189,27 @@ pub fn space_action(selecting: bool, row_focused: bool) -> SpaceAction {
 }
 
 /// Whether a key pressed in the list or the status page goes into the
-/// search field: a key that types a character, without Ctrl or Alt, while
-/// no popover (a row's menu, a drop-down's popup) is open and cards are not
-/// being chosen (the field is hidden then). Space, Enter, Tab, Escape and
-/// the movement keys stay with the focused widget, as in GTK's own key
-/// capture (gtksearchentry.c, `gtk_search_entry_is_keynav` and
-/// `capture_widget_key_handled`).
+/// search field (`search_empty`: the field has no text yet):
+/// - a key that types a character, without Ctrl or Alt;
+/// - a dead key or Compose (`Multi_key`): the field takes the focus and
+///   its input method composes the key that follows (Compose s s → ß);
+/// - Backspace, when there is text to delete (GTK's own key capture
+///   forwards it too).
+///
+/// Never while a popover (a row's menu, a drop-down's popup) is open, nor
+/// while cards are being chosen (the field is hidden then). Space, Enter,
+/// Tab, Escape and the movement keys stay with the focused widget, as in
+/// GTK's own key capture (gtksearchentry.c, `gtk_search_entry_is_keynav`
+/// and `capture_widget_key_handled`).
 pub fn types_into_search(
     key: gtk::gdk::Key,
     modifiers: gtk::gdk::ModifierType,
     in_popover: bool,
     selecting: bool,
+    search_empty: bool,
 ) -> bool {
     use gtk::gdk::{Key, ModifierType};
+    use gtk::glib::translate::IntoGlib;
     if in_popover
         || selecting
         || modifiers.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK)
@@ -211,6 +219,16 @@ pub fn types_into_search(
         )
     {
         return false;
+    }
+    if key == Key::BackSpace {
+        return !search_empty;
+    }
+    // The dead keys are one range of keysyms, dead_grave (0xfe50) to
+    // dead_longsolidusoverlay (0xfe93) (gdk/gdkkeysyms.h).
+    let dead = (Key::dead_grave.into_glib()..=Key::dead_longsolidusoverlay.into_glib())
+        .contains(&key.into_glib());
+    if dead || key == Key::Multi_key {
+        return true;
     }
     key.to_unicode().is_some_and(|c| !c.is_control())
 }
@@ -467,31 +485,19 @@ mod tests {
     fn only_typing_keys_go_into_the_search() {
         use gtk::gdk::{Key, ModifierType};
         let none = ModifierType::empty();
-        assert!(types_into_search(Key::a, none, false, false));
-        assert!(types_into_search(
-            Key::A,
-            ModifierType::SHIFT_MASK,
-            false,
-            false
-        ));
-        assert!(types_into_search(Key::eacute, none, false, false));
-        assert!(types_into_search(Key::_7, none, false, false));
+        let types = |key, modifiers, in_popover, selecting| {
+            types_into_search(key, modifiers, in_popover, selecting, true)
+        };
+        assert!(types(Key::a, none, false, false));
+        assert!(types(Key::A, ModifierType::SHIFT_MASK, false, false));
+        assert!(types(Key::eacute, none, false, false));
+        assert!(types(Key::_7, none, false, false));
         // A popover open (a row's menu, the State popup), or choosing.
-        assert!(!types_into_search(Key::a, none, true, false));
-        assert!(!types_into_search(Key::a, none, false, true));
+        assert!(!types(Key::a, none, true, false));
+        assert!(!types(Key::a, none, false, true));
         // Shortcuts and keys that move or activate.
-        assert!(!types_into_search(
-            Key::a,
-            ModifierType::CONTROL_MASK,
-            false,
-            false
-        ));
-        assert!(!types_into_search(
-            Key::a,
-            ModifierType::ALT_MASK,
-            false,
-            false
-        ));
+        assert!(!types(Key::a, ModifierType::CONTROL_MASK, false, false));
+        assert!(!types(Key::a, ModifierType::ALT_MASK, false, false));
         for key in [
             Key::space,
             Key::Return,
@@ -506,8 +512,25 @@ mod tests {
             Key::F1,
             Key::Menu,
         ] {
-            assert!(!types_into_search(key, none, false, false), "{key:?}");
+            assert!(!types(key, none, false, false), "{key:?}");
         }
+        // Dead keys and Compose start a search, so the field's input
+        // method composes what follows.
+        for key in [
+            Key::Multi_key,
+            Key::dead_acute,
+            Key::dead_grave,
+            Key::dead_circumflex,
+            Key::dead_longsolidusoverlay,
+        ] {
+            assert!(types(key, none, false, false), "{key:?}");
+            assert!(!types(key, none, true, false), "{key:?} in a popover");
+        }
+        // Backspace only when there is text to delete.
+        assert!(!types_into_search(Key::BackSpace, none, false, false, true));
+        assert!(types_into_search(Key::BackSpace, none, false, false, false));
+        assert!(!types_into_search(Key::BackSpace, none, false, true, false));
+        assert!(!types_into_search(Key::BackSpace, none, true, false, false));
     }
 
     #[test]
