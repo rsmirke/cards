@@ -36,6 +36,7 @@ mod imp {
     use crate::state::AppState;
     use crate::ui::debounce::Debounce;
     use crate::ui::rows;
+    use crate::ui::toast::ErrorSlot;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/decks_page.ui")]
@@ -55,6 +56,8 @@ mod imp {
         pub opened: RefCell<Option<String>>,
         /// Reads the decks again when a row's text would change.
         pub refresh_timer: Debounce,
+        /// The last "could not be read" toast of a reload.
+        pub read_errors: ErrorSlot,
         /// The window's `is-active` is watched (connected once, at the
         /// first realize).
         pub watching_window: Cell<bool>,
@@ -393,6 +396,8 @@ impl DecksPage {
             for (row, summary) in rows.iter().zip(&decks) {
                 row.update(summary, now, next_day);
             }
+            imp.content_stack
+                .set_visible_child_name(if decks.is_empty() { "empty" } else { "list" });
             return Ok(());
         }
         // Rebuilt under `Keep` (decks added or removed meanwhile, e.g. by
@@ -443,9 +448,17 @@ impl DecksPage {
             .collect()
     }
 
+    /// [`Self::reload`], with a failure in the page's [`ErrorSlot`]: the
+    /// list is read again on every activation of the window and by a
+    /// timer, so a lasting failure replaces its toast instead of piling
+    /// them up.
     fn reload_or_toast(&self, focus: Focus<'_>) {
         if let Err(err) = self.reload(focus) {
-            self.error_toast(&format!("The decks could not be read: {err}"));
+            self.imp().read_errors.show(
+                self,
+                "reading the decks",
+                &format!("The decks could not be read: {err}"),
+            );
         }
     }
 

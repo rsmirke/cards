@@ -292,10 +292,12 @@ fn rebuilding_the_search_index_of_five_thousand_cards_is_fast() {
     assert!(t < Duration::from_millis(REBUILD_INDEX_MS), "{t:?}");
 }
 
-/// `study_input` + `next_study_change` (measured 14 ms), and `list_decks`
-/// (12 ms; then about 10 ms more with the card counts and the next change
-/// the deck list shows, ADR 0041, measured 51 ms on a loaded machine where
-/// `study_input` took 41 ms), each.
+/// `study_input` + `next_study_change`, and `list_decks`, each. Measured
+/// side by side on one loaded machine (debug build): `study_input` 27 ms,
+/// `next_study_change` 3 ms, `list_decks` 28 ms. `list_decks` counts
+/// without reading card ids (`deck_counts_in`, ADR 0041); before that it
+/// took 42 ms there, and 52 to 56 ms with a separate count and next-change
+/// query per deck.
 const STUDY_MS: u64 = 150;
 /// `list_cards` of 5,000 cards (measured 6 ms).
 const LIST_CARDS_MS: u64 = 100;

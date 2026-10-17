@@ -691,6 +691,69 @@ mod study_counts {
         let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
         assert_eq!((d.due_count, d.next_change_at), (1, None));
         assert_next_matches(&store, T0);
+        // Seen from 30 minutes earlier, the step (due at T0 + 10 min) is
+        // more than 20 minutes away: it changes the deck 20 minutes early.
+        let earlier = T0 - 30 * 60_000;
+        let d = store.list_decks(earlier, DAY_START).unwrap().remove(0);
+        let due = T0 + 10 * 60_000;
+        assert_eq!(
+            (d.due_count, d.next_change_at),
+            (0, Some(due - 20 * 60_000))
+        );
+        assert_next_matches(&store, earlier);
+    }
+
+    #[test]
+    fn suspended_cards_are_never_held_back() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 30);
+        store.set_suspended(&cards[25..], true).unwrap();
+        // 25 new not suspended, 20 allowed: 5 held back, not 10.
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!(
+            (d.new_count, d.held_back_count, d.suspended_count),
+            (NEW_PER_DAY, 5, 5)
+        );
+
+        // Three overdue reviews, one suspended, a limit of 1: one held back.
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Physics", 3);
+        for card in &cards {
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS);
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS + 600_000);
+        }
+        store.set_suspended(&cards[..1], true).unwrap();
+        store.set_max_reviews_per_day(1).unwrap();
+        let later = T0 + 400 * DAY_MS;
+        let d = store.list_decks(later, later).unwrap().remove(0);
+        assert_eq!((d.due_count, d.held_back_count), (1, 1));
+    }
+
+    #[test]
+    fn a_reset_card_counts_as_new_again() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 1);
+        answer(&mut store, &cards[0], Grade::Pass, T0 - 3 * DAY_MS);
+        answer(
+            &mut store,
+            &cards[0],
+            Grade::Pass,
+            T0 - 3 * DAY_MS + 600_000,
+        );
+        let before = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!(before.new_count, 0);
+        store.reset_card(&cards[0], T0).unwrap();
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!(
+            (
+                d.new_count,
+                d.due_count,
+                d.held_back_count,
+                d.next_change_at
+            ),
+            (1, 0, 0, None)
+        );
+        assert_list_matches_study_input(&store, T0, DAY_START);
     }
 
     #[test]

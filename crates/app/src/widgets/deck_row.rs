@@ -35,6 +35,8 @@ mod imp {
         #[template_child]
         pub menu_button: TemplateChild<gtk::MenuButton>,
         pub deck_id: RefCell<String>,
+        /// The accessible label last set, "Scratch, 12 due, 5 new".
+        pub accessible_label: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -91,10 +93,15 @@ impl DeckRow {
         imp.separator_label.set_visible(line.has_separator());
         // The row is read as one: "Scratch, 12 due, 5 new" (the "·" and the
         // units in words).
-        self.update_property(&[gtk::accessible::Property::Label(
-            &line.accessible_label(name),
-        )]);
-        rows::label_menu_button(&imp.menu_button, name);
+        // Set only when it changed: the list refreshes every minute or so,
+        // and a screen reader may announce a changed label of the focused
+        // row again.
+        let label = line.accessible_label(name);
+        if *imp.accessible_label.borrow() != label {
+            self.update_property(&[gtk::accessible::Property::Label(&label)]);
+            rows::label_menu_button(&imp.menu_button, name);
+            imp.accessible_label.replace(label);
+        }
     }
 
     /// The id of the deck this row shows.

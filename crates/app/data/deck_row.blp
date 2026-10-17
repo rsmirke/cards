@@ -67,6 +67,8 @@ template $RappelDeckRow: Gtk.ListBoxRow {
 
         Gtk.Label separator_label {
           label: "·";
+          // Only a visual divider; the row's label says the line in words.
+          accessible-role: presentation;
 
           styles [
             "subtitle",
