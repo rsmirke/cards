@@ -17,9 +17,16 @@ template $RappelDeckPage: Adw.NavigationPage {
     Adw.Breakpoint {
       condition ("max-width: 400sp")
 
+      // Only one Study button has the Alt+S mnemonic at a time: while the
+      // bar slides away after the breakpoint unapplies, both buttons are
+      // mapped, and two equal mnemonics would only cycle the focus
+      // (GtkWindow mnemonics). The setters revert at once on unapply, so
+      // the bar loses its mnemonic as the header button comes back.
       setters {
         header_study_button.visible: false;
         study_bar.revealed: true;
+        bar_study_button.label: _("_Study");
+        bar_study_button.use-underline: true;
       }
     }
 
@@ -127,12 +134,9 @@ template $RappelDeckPage: Adw.NavigationPage {
         revealed: false;
 
         [center]
-        Gtk.Button {
-          label: _("_Study");
-          use-underline: true;
+        Gtk.Button bar_study_button {
+          label: _("Study");
           action-name: "deck.study";
-          margin-top: 6;
-          margin-bottom: 6;
 
           styles [
             "pill",

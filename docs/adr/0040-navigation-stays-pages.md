@@ -8,7 +8,22 @@
 
 The phase 1 brief asks to evaluate an `AdwNavigationSplitView` for the shell: the deck list in a sidebar on wide windows, collapsing to today's `AdwNavigationView` pages when narrow, and to build it only if it looks clean.
 
-A prototype was built and kept on the local branch `spike/split-view` (commit "chore: prototype decks in an adaptive split view"). The deck list became the split view's sidebar; the content was an `AdwNavigationPage` holding a nested `AdwNavigationView` with a "No Deck Selected" placeholder, onto which the deck page and everything above it (review, statistics, All Cards) were pushed. An `AdwBreakpoint` on the window collapsed it under 600 sp. It was screenshotted at 1000 × 720 and 360 × 640 next to the current pages.
+A prototype was built and kept as commit 2030aa1 ("chore: prototype decks in an adaptive split view") on the local branch `spike/split-view`. Its widget tree, inside the window's start-up stack:
+
+```
+AdwApplicationWindow
+├── AdwBreakpoint (max-width: 600sp → split_view.collapsed = true)
+└── AdwToastOverlay
+    └── stack page "main"
+        └── AdwNavigationSplitView split_view
+            ├── sidebar: DecksPage (AdwNavigationPage; header: New Deck | "Rappel" | Search All Cards, Main Menu)
+            └── content: AdwNavigationPage
+                └── AdwNavigationView navigation_view
+                    ├── AdwNavigationPage "placeholder" (AdwStatusPage "No Deck Selected")
+                    └── pushed: DeckPage, then ReviewPage / StatsPage / BrowserPage
+```
+
+Opening a deck popped the content view to the placeholder, pushed the deck page and set `show-content`. Statistics and All Cards were pushed onto the same content view. It was screenshotted at 1000 × 720 and 360 × 640 next to the current pages.
 
 ## Decision
 
@@ -22,8 +37,8 @@ A prototype was built and kept on the local branch `spike/split-view` (commit "c
 6. **Simplicity.** `ui::nav`, `window_state::deck_to_reopen`, `win.new` and `win.search` all assume one navigation view. The split view would change each, for no gain in the main tasks.
 
 **Shell polish that comes with this choice.**
-- Header bars keep at most three controls per side at the window's minimum size, 360 × 294. The deck page header (Back, New Card, title, Study, Deck Menu, plus the window buttons) needed more than 360 px, so the window grew wider than a phone screen. Its layout is now an `AdwBreakpointBin` with a breakpoint at 400 sp: there Study moves from the header to a `GtkActionBar` at the bottom, revealed only on narrow windows, with the same action (`deck.study`). The bin's size request is the window minimum.
-- The window's start-up stack is an `AdwViewStack` with `enable-transitions`, so its crossfade is libadwaita's animation (and off when the system turns animations off), not a `GtkStack` transition.
+- The headers checked at 360 px wide (360 × 640 and 360 × 294) keep at most three controls per side, window buttons not counted: the deck list (New Deck | Search All Cards, Main Menu), the deck page (Back, New Card | Deck Menu, Study moved down as below), the review page (Back, Undo | Edit Card, Card Menu), Statistics (Back) and All Cards (Back, search field | Select Cards). The card editor dialog's header (Cancel | Preview, Save) fits once the window no longer grows. The other dialogs were not checked here (dialog slice). The deck page header (Back, New Card, title, Study, Deck Menu, plus the window buttons) needed more than 360 px, so the window grew wider than a phone screen. Its layout is now an `AdwBreakpointBin` with a breakpoint at 400 sp: there Study moves from the header to a `GtkActionBar` at the bottom, revealed only on narrow windows, with the same action (`deck.study`). The bar's button is a pill, like the review page's answer buttons, with no extra margins (the window can be 294 px tall). Only the visible Study button has the Alt+S mnemonic. The bin's size request is the window minimum.
+- The window's start-up stack is an `AdwViewStack` with `enable-transitions`, so its crossfade is libadwaita's transition, as the brief's design rules ask. Nothing changes for the user: `GtkStack`'s transition also honoured `gtk-enable-animations`.
 - The primary menu, header tooltips and accessible labels, and the page titles were already as the brief asks; they are unchanged.
 
 ## Consequences

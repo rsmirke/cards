@@ -10,9 +10,9 @@ template $RappelWindow: Adw.ApplicationWindow {
 
   content: Adw.ToastOverlay toast_overlay {
     // One page per startup outcome; window.rs picks the visible one. An
-    // AdwViewStack, so the crossfade (after a restore) is libadwaita's own
-    // animation, which is skipped when the system turns animations off
-    // (AdwViewStack:enable-transitions, AdwAnimation docs).
+    // AdwViewStack, so the crossfade (after a restore) is libadwaita's
+    // transition, as the brief's design rules ask. Like GtkStack's, it is
+    // skipped when gtk-enable-animations is off.
     child: Adw.ViewStack stack {
       enable-transitions: true;
 
