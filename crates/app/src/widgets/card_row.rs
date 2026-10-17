@@ -77,6 +77,10 @@ mod imp {
         pub item: RefCell<Option<BrowseItem>>,
         pub list_item: glib::WeakRef<gtk::ListItem>,
         pub selected_handler: RefCell<Option<glib::SignalHandlerId>>,
+        /// How many times an item's `selected` reached the row, so the
+        /// tests can tell that an old item's handler is gone.
+        #[cfg(test)]
+        pub selected_seen: Cell<usize>,
     }
 
     #[glib::object_subclass]
@@ -203,7 +207,13 @@ impl CardRow {
         let handler = item.connect_selected_notify(glib::clone!(
             #[weak(rename_to = row)]
             self,
-            move |_| row.update_selection()
+            move |_| {
+                #[cfg(test)]
+                row.imp()
+                    .selected_seen
+                    .set(row.imp().selected_seen.get() + 1);
+                row.update_selection();
+            }
         ));
         imp.selected_handler.replace(Some(handler));
         self.update_selection();
@@ -399,17 +409,70 @@ mod tests {
                     .accessible_label()
                     .ends_with("deck: Maths, New, selected")
             );
-            // Recycled, it no longer follows the old item.
+            // Recycled, it no longer follows the old item: the old item's
+            // handler is gone, the new one's is there.
             let other = browse_item(7);
             row.bind_browse(&other, &list_item);
             assert!(!imp.check.is_active());
+            let seen = imp.selected_seen.get();
             item.set_selected(false);
+            assert_eq!(
+                imp.selected_seen.get(),
+                seen,
+                "the old item reached the row"
+            );
             other.set_selected(true);
+            assert_eq!(imp.selected_seen.get(), seen + 1);
             assert!(imp.check.is_active());
             assert_eq!(imp.caption_label.label(), "Maths · Suspended");
             assert!(imp.suspended_icon.is_visible());
             // A deck page row has no third line.
             assert!(!CardRow::default().imp().caption_label.is_visible());
+        });
+    }
+
+    /// The menu of a deck page row reaches `deck.*`, of an All Cards row
+    /// `browser.*`, with the bound card's id.
+    #[test]
+    fn a_row_forwards_to_its_own_pages_actions() {
+        crate::testing::with_widgets(|| {
+            use std::cell::RefCell;
+            use std::rc::Rc;
+
+            let got: Rc<RefCell<Vec<String>>> = Rc::default();
+            let group = |prefix: &'static str| {
+                let actions = gtk::gio::SimpleActionGroup::new();
+                let action =
+                    gtk::gio::SimpleAction::new("edit-card", Some(glib::VariantTy::STRING));
+                let got = got.clone();
+                action.connect_activate(move |_, id| {
+                    let id = id.and_then(glib::Variant::str).unwrap_or_default();
+                    got.borrow_mut().push(format!("{prefix}.edit-card {id}"));
+                });
+                actions.add_action(&action);
+                actions
+            };
+            let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            outer.insert_action_group("deck", Some(&group("deck")));
+            let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            inner.insert_action_group("browser", Some(&group("browser")));
+            outer.append(&inner);
+
+            let deck_row = CardRow::default();
+            inner.append(&deck_row);
+            deck_row.bind(&card(3));
+            deck_row.activate_action("row.edit", None).unwrap();
+
+            let browser_row = CardRow::for_browser();
+            inner.append(&browser_row);
+            let list_item = glib::Object::new::<gtk::ListItem>();
+            browser_row.bind_browse(&browse_item(4), &list_item);
+            browser_row.activate_action("row.edit", None).unwrap();
+
+            assert_eq!(
+                *got.borrow(),
+                ["deck.edit-card card-00003", "browser.edit-card card-00004"]
+            );
         });
     }
 
@@ -520,9 +583,13 @@ mod tests {
             assert!(row.imp().menu_button.popover().is_none());
             assert!(items[..4_000].iter().all(BrowseItem::has_previews));
             assert!(!items[4_000..].iter().any(BrowseItem::has_previews));
-            // Unbound, the row no longer follows any of them.
-            items[0].set_selected(true);
-            assert!(!row.imp().check.is_active());
+            // Unbound, the row no longer follows any of them: no handler
+            // is left on the items it was bound to.
+            let seen = row.imp().selected_seen.get();
+            for item in &items[..4_000] {
+                item.set_selected(true);
+            }
+            assert_eq!(row.imp().selected_seen.get(), seen);
             cpu
         });
         if let Some(cpu) = cpu {

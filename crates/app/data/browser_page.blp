@@ -106,8 +106,9 @@ template $RappelBrowserPage: Adw.NavigationPage {
       // Deck, tag and state, side by side and as wide as the list under
       // them; on a phone they share the width and their texts end in "…"
       // (ui::dropdown::shrinkable), so they never take more than one line.
+      // Hidden while there is no card at all (pages/browser_page.rs).
       [top]
-      Adw.Clamp {
+      Adw.Clamp filter_bar {
         maximum-size: 600;
 
         child: Gtk.Box {

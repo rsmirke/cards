@@ -1,6 +1,6 @@
 //! Every text and small decision of the All Cards page that needs no GTK:
-//! row captions and labels, counts, the empty states, toast texts, which empty state to show, what
-//! Escape does. Pure, so it is unit-tested (SPEC §4.6, ADR 0036).
+//! row captions and labels, counts, toast texts, which empty state to show
+//! and what it says, what Escape and Space do. Pure, so it is unit-tested (SPEC §4.6, ADR 0036).
 
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
 
@@ -145,13 +145,74 @@ pub fn searched_and_filtered(query: &BrowseQuery) -> (bool, bool) {
 }
 
 /// `shown` rows came back; `filtered` says whether a search text or a filter
-/// was set.
-pub fn empty_state(shown: usize, filtered: bool) -> Empty {
-    match (shown, filtered) {
-        (0, false) => Empty::NoCards,
-        (0, true) => Empty::NoResults,
-        _ => Empty::No,
+/// was set, `collection_empty` whether there is no live card at all
+/// (whatever the filters). An empty collection is "No Cards Yet" even with
+/// a filter set (opened from an empty deck), so the page does not say "No
+/// Results Found" first and then change its mind.
+pub fn empty_state(shown: usize, filtered: bool, collection_empty: bool) -> Empty {
+    if shown > 0 {
+        Empty::No
+    } else if collection_empty || !filtered {
+        Empty::NoCards
+    } else {
+        Empty::NoResults
     }
+}
+
+/// Whether the filter bar shows: not while there is no card at all, when
+/// there is nothing to narrow.
+pub fn filters_shown(empty: Empty) -> bool {
+    empty != Empty::NoCards
+}
+
+/// What Space does on the card list (capture phase, before the list's own
+/// keys).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceAction {
+    /// Choose or drop the focused card.
+    Toggle,
+    /// Leave it to the focused widget (a row's menu button opens its menu;
+    /// a row outside selection mode does nothing). Space never starts a
+    /// search: the page's key capture leaves it (`types_into_search`), as
+    /// GTK's own does (gtksearchentry.c, `capture_widget_key_handled`).
+    Pass,
+}
+
+/// Space chooses the focused card in selection mode when the row itself
+/// (not its menu button) has the focus.
+pub fn space_action(selecting: bool, row_focused: bool) -> SpaceAction {
+    if selecting && row_focused {
+        SpaceAction::Toggle
+    } else {
+        SpaceAction::Pass
+    }
+}
+
+/// Whether a key pressed in the list or the status page goes into the
+/// search field: a key that types a character, without Ctrl or Alt, while
+/// no popover (a row's menu, a drop-down's popup) is open and cards are not
+/// being chosen (the field is hidden then). Space, Enter, Tab, Escape and
+/// the movement keys stay with the focused widget, as in GTK's own key
+/// capture (gtksearchentry.c, `gtk_search_entry_is_keynav` and
+/// `capture_widget_key_handled`).
+pub fn types_into_search(
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+    in_popover: bool,
+    selecting: bool,
+) -> bool {
+    use gtk::gdk::{Key, ModifierType};
+    if in_popover
+        || selecting
+        || modifiers.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK)
+        || matches!(
+            key,
+            Key::space | Key::KP_Space | Key::Return | Key::KP_Enter | Key::ISO_Enter | Key::Menu
+        )
+    {
+        return false;
+    }
+    key.to_unicode().is_some_and(|c| !c.is_control())
 }
 
 /// What Escape does while the focus is in the list.
@@ -381,11 +442,72 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_state_depends_on_whether_anything_was_asked() {
-        assert_eq!(empty_state(0, false), Empty::NoCards);
-        assert_eq!(empty_state(0, true), Empty::NoResults);
-        assert_eq!(empty_state(1, true), Empty::No);
-        assert_eq!(empty_state(1, false), Empty::No);
+    fn the_empty_state_depends_on_the_collection_then_on_what_was_asked() {
+        assert_eq!(empty_state(0, false, true), Empty::NoCards);
+        assert_eq!(empty_state(0, true, false), Empty::NoResults);
+        // Opened from an empty deck in an empty collection: the deck
+        // filter is set, but there is nothing to find anywhere.
+        assert_eq!(empty_state(0, true, true), Empty::NoCards);
+        assert_eq!(empty_state(1, true, false), Empty::No);
+        assert_eq!(empty_state(1, false, false), Empty::No);
+        assert!(!filters_shown(Empty::NoCards));
+        assert!(filters_shown(Empty::NoResults));
+        assert!(filters_shown(Empty::No));
+    }
+
+    #[test]
+    fn space_chooses_only_a_focused_row_in_selection_mode() {
+        assert_eq!(space_action(true, true), SpaceAction::Toggle);
+        assert_eq!(space_action(true, false), SpaceAction::Pass);
+        assert_eq!(space_action(false, true), SpaceAction::Pass);
+        assert_eq!(space_action(false, false), SpaceAction::Pass);
+    }
+
+    #[test]
+    fn only_typing_keys_go_into_the_search() {
+        use gtk::gdk::{Key, ModifierType};
+        let none = ModifierType::empty();
+        assert!(types_into_search(Key::a, none, false, false));
+        assert!(types_into_search(
+            Key::A,
+            ModifierType::SHIFT_MASK,
+            false,
+            false
+        ));
+        assert!(types_into_search(Key::eacute, none, false, false));
+        assert!(types_into_search(Key::_7, none, false, false));
+        // A popover open (a row's menu, the State popup), or choosing.
+        assert!(!types_into_search(Key::a, none, true, false));
+        assert!(!types_into_search(Key::a, none, false, true));
+        // Shortcuts and keys that move or activate.
+        assert!(!types_into_search(
+            Key::a,
+            ModifierType::CONTROL_MASK,
+            false,
+            false
+        ));
+        assert!(!types_into_search(
+            Key::a,
+            ModifierType::ALT_MASK,
+            false,
+            false
+        ));
+        for key in [
+            Key::space,
+            Key::Return,
+            Key::KP_Enter,
+            Key::Tab,
+            Key::Escape,
+            Key::Down,
+            Key::Home,
+            Key::Page_Down,
+            Key::BackSpace,
+            Key::Delete,
+            Key::F1,
+            Key::Menu,
+        ] {
+            assert!(!types_into_search(key, none, false, false), "{key:?}");
+        }
     }
 
     #[test]

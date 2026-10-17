@@ -28,7 +28,7 @@ use crate::window::RappelWindow;
 pub mod selection;
 pub mod text;
 
-use text::{Empty, EscapeAction, SuspendChoice};
+use text::{Empty, EscapeAction, SpaceAction, SuspendChoice};
 
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -67,6 +67,8 @@ mod imp {
         pub tag_filter: TemplateChild<gtk::DropDown>,
         #[template_child]
         pub state_filter: TemplateChild<gtk::DropDown>,
+        #[template_child]
+        pub filter_bar: TemplateChild<adw::Clamp>,
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
@@ -372,32 +374,7 @@ impl BrowserPage {
             self,
             move |_, position| page.activate(position)
         ));
-        // Typing anywhere on the page searches: the field takes the keys
-        // that make text and that no widget under the focus used (they are
-        // taken in the bubble phase, so the list's own keys and the
-        // drop-downs' search fields come first; GtkSearchEntry docs,
-        // `set_key_capture_widget`, a method since GTK 4.0, unlike the
-        // property, which is 4.22). Stopped while cards are being chosen,
-        // when the field is not shown (`update_selection_ui`).
-        imp.search_entry.set_key_capture_widget(Some(self));
-        // The captured keys go into the field without moving the focus
-        // there, so the next Backspace or arrow would act on the list.
-        // Move it, without selecting the text, so typing carries on in the
-        // field with its caret after the letter just typed.
-        imp.search_entry.connect_changed(|entry| {
-            let Some(root) = entry.root() else {
-                return;
-            };
-            let in_field = root.focus().is_some_and(|focus| {
-                focus.is_ancestor(entry) || &focus == entry.upcast_ref::<gtk::Widget>()
-            });
-            if !in_field
-                && !entry.text().is_empty()
-                && let Some(text) = entry.delegate().and_downcast::<gtk::Text>()
-            {
-                text.grab_focus_without_selecting();
-            }
-        });
+        self.add_type_to_search();
         self.connect_hidden(|page| {
             // The deck pages and the deck list read what was written here
             // (the page may be about to go, so it is the window's to ask).
@@ -417,6 +394,46 @@ impl BrowserPage {
         self.add_escape();
     }
 
+    /// Typing in the list or on the status page searches: a key that types
+    /// a character goes into the search field, which takes the focus
+    /// without selecting its text, so typing, Backspace and the arrows
+    /// carry on there (`text::types_into_search`). Bubble phase on the
+    /// content, so the list's own keys come first, the filters and the
+    /// header keep theirs, and a key typed while a popover is open (a row's
+    /// menu, a drop-down's popup: the event comes from the popover's own
+    /// surface) stays there. Not GTK's `gtk_search_entry_set_key_capture_widget`:
+    /// it forwards keys from popovers under the capture widget too and
+    /// leaves the focus behind (gtksearchentry.c,
+    /// `capture_widget_key_handled`).
+    fn add_type_to_search(&self) {
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |keys, key, _, modifiers| {
+                let imp = page.imp();
+                let in_popover = keys.current_event().and_then(|event| event.surface())
+                    != imp.content_stack.native().and_then(|n| n.surface());
+                if !text::types_into_search(key, modifiers, in_popover, page.selecting()) {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(field) = imp.search_entry.delegate().and_downcast::<gtk::Text>() else {
+                    return glib::Propagation::Proceed;
+                };
+                field.grab_focus_without_selecting();
+                field.set_position(-1);
+                if keys.forward(&field) {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+        ));
+        self.imp().content_stack.add_controller(keys);
+    }
+
     /// Ctrl+A and Space on the list. Capture phase on the list, so they come
     /// before the list view's own bindings (`list.select-all` and the item's
     /// `listitem.select` do nothing on a list without a selection model).
@@ -434,17 +451,17 @@ impl BrowserPage {
                 if ctrl && matches!(key, gtk::gdk::Key::a | gtk::gdk::Key::A) {
                     page.select_all();
                     glib::Propagation::Stop
-                } else if key == gtk::gdk::Key::space && !ctrl && page.row_has_focus() {
-                    // Space on a row (not on its menu button) chooses the
-                    // card while choosing, and otherwise does nothing: it
-                    // must not reach the search field's key capture and
-                    // start a search with a space.
-                    if page.imp().selection.borrow().active()
-                        && let Some(id) = page.focused_card()
-                    {
-                        page.toggle(&id);
+                } else if key == gtk::gdk::Key::space && !ctrl {
+                    let selecting = page.imp().selection.borrow().active();
+                    match text::space_action(selecting, page.row_has_focus()) {
+                        SpaceAction::Toggle => {
+                            if let Some(id) = page.focused_card() {
+                                page.toggle(&id);
+                            }
+                            glib::Propagation::Stop
+                        }
+                        SpaceAction::Pass => glib::Propagation::Proceed,
                     }
-                    glib::Propagation::Stop
                 } else {
                     glib::Propagation::Proceed
                 }
@@ -612,7 +629,8 @@ impl BrowserPage {
         self.requery();
         let imp = self.imp();
         let n = imp.items.get().map_or(0, gio::ListStore::n_items);
-        imp.count_label.announce(
+        // From the page: the count label is hidden on a narrow window.
+        self.announce(
             &text::count_text(n as usize),
             gtk::AccessibleAnnouncementPriority::Medium,
         );
@@ -647,8 +665,23 @@ impl BrowserPage {
                 .collect()
         };
         store.splice(0, store.n_items(), &items);
-        let empty = text::empty_state(items.len(), text::is_filtered(&query));
+        let filtered = text::is_filtered(&query);
+        // Whether there is any card at all, whatever the filters: read only
+        // when a filtered search found nothing (unfiltered, no rows means
+        // no cards).
+        let collection_empty = if items.is_empty() && filtered {
+            state
+                .list_decks(rappel_core::time::now_ms())?
+                .iter()
+                .all(|deck| deck.card_count == 0)
+        } else {
+            items.is_empty()
+        };
+        let empty = text::empty_state(items.len(), filtered, collection_empty);
         imp.empty.set(empty);
+        imp.filter_bar.set_visible(text::filters_shown(empty));
+        // Nothing to choose from.
+        self.action_set_enabled("browser.choose", !items.is_empty());
         match text::empty_page(empty) {
             None => imp.content_stack.set_visible_child_name("list"),
             Some((icon, title, description)) => {
@@ -742,6 +775,9 @@ impl BrowserPage {
     fn select_all(&self) {
         let imp = self.imp();
         let ids = self.ids();
+        if ids.is_empty() {
+            return;
+        }
         imp.selection
             .borrow_mut()
             .select_all(ids.iter().map(String::as_str));
@@ -841,8 +877,6 @@ impl BrowserPage {
             imp.select_all_button.set_visible(active);
             imp.cancel_button.set_visible(active);
             self.set_can_pop(!active);
-            imp.search_entry
-                .set_key_capture_widget(if active { None } else { Some(self) });
             imp.action_bar.set_revealed(active);
             if header_focus && !active {
                 imp.select_button.grab_focus();
@@ -1430,6 +1464,35 @@ mod tests {
             );
             assert_eq!(imp.empty_page.title(), "No Cards Yet");
             assert_eq!(imp.empty_button.label().as_deref(), Some("_Go to Decks"));
+            assert!(!imp.filter_bar.is_visible(), "nothing to filter");
+            // Nothing to choose: no selection mode, Ctrl+A does nothing.
+            let _ = page.activate_action("browser.choose", None);
+            assert!(!page.selecting(), "a disabled Select does nothing");
+            page.select_all();
+            assert!(!page.selecting());
+        });
+    }
+
+    #[test]
+    fn opened_from_an_empty_deck_it_says_no_cards_or_no_results() {
+        crate::testing::with_gtk(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let empty = state.create_deck("Empty").unwrap();
+            // No card anywhere: "No Cards Yet" at once, even filtered.
+            let page = page_over(&state, Some(&empty.id));
+            assert_eq!(page.imp().empty_page.title(), "No Cards Yet");
+            assert!(!page.imp().filter_bar.is_visible());
+            // Cards elsewhere: the deck filter finds none of them.
+            let other = state.create_deck("Other").unwrap();
+            state
+                .add_card_with_tags(&other.id, "front", "back", &[])
+                .unwrap();
+            let page = page_over(&state, Some(&empty.id));
+            assert_eq!(page.imp().empty_page.title(), "No Results Found");
+            assert!(page.imp().filter_bar.is_visible());
+            let _ = page.activate_action("browser.choose", None);
+            assert!(!page.selecting(), "a disabled Select does nothing");
         });
     }
 
@@ -1499,6 +1562,7 @@ mod tests {
             assert_eq!(imp.selection_title.title(), "4 Selected");
             imp.cancel_button.emit_clicked();
             assert!(!page.selecting());
+            assert!(page.can_pop(), "Back and Escape go back again after Cancel");
             assert_eq!(page.chosen_ids().len(), 0);
             assert_eq!(
                 imp.title_stack.visible_child_name().as_deref(),
@@ -1544,9 +1608,11 @@ mod tests {
             // Both arms borrow the selection again: a `Ref` held while they
             // run would panic inside GTK's key handler and abort.
             page.choose_mode(true);
+            assert!(!page.can_pop());
             page.toggle(&ids[0]);
             assert_eq!(page.escape(), glib::Propagation::Stop);
             assert!(!imp.selection.borrow().active());
+            assert!(page.can_pop(), "Back and Escape go back again after Escape");
 
             imp.search_entry.set_text("alpha");
             assert_eq!(page.escape(), glib::Propagation::Stop);
