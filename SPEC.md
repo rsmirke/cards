@@ -134,10 +134,11 @@ The work is done in three phases, each ending in a release (ADR 0038, amending t
 1. Streaming import (§4.1).
 2. Images (§4.3).
 3. Audio (§4.9).
-4. Phone and touch adaptivity (§4.8).
-5. Anki `.apkg` import (§4.11).
-6. A refactor and hardening, as in phase 1 (§4.10).
-7. v0.3.0.
+4. Removing unused media files — needs its own design decision (undo, restore and backups must never lose a file).
+5. Phone and touch adaptivity (§4.8).
+6. Anki `.apkg` import (§4.11).
+7. A refactor and hardening, as in phase 1 (§4.10).
+8. v0.3.0.
 
 **Phase 3 — ends in v1.0:** translation, testing campaign, packaging, release (§5).
 
