@@ -1,6 +1,6 @@
 //! What the card information screen shows (issue #39, ADR 0032).
 
-use super::{as_counted, counted_reviews, retrievability};
+use super::{as_activity, counted_reviews, retrievability};
 use crate::domain::{Card, CardState, EventKind, Grade, ReviewEvent};
 use crate::error::{Error, Result};
 use crate::scheduling::{Scheduler, surviving};
@@ -108,7 +108,7 @@ pub(crate) fn card_info(
     }
     let counted: Vec<_> = counted_reviews(log)?
         .into_iter()
-        .filter_map(as_counted)
+        .filter_map(as_activity)
         .collect();
     let (reviews, passes) = (
         u32::try_from(counted.len()).unwrap_or(u32::MAX),

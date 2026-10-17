@@ -113,16 +113,6 @@ fn tables(conn: &Connection) -> Vec<String> {
         .unwrap()
 }
 
-fn indexes(conn: &Connection) -> Vec<String> {
-    let mut stmt = conn
-        .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' ORDER BY name")
-        .unwrap();
-    stmt.query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
-}
-
 pub(super) const FAKE_V1: Migration = Migration {
     version: 1,
     name: "fake v1",

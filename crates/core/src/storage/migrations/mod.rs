@@ -106,13 +106,6 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuild_schedule: false,
         backfill: None,
     },
-    Migration {
-        version: 9,
-        name: "resets index",
-        sql: include_str!("0009_resets_index.sql"),
-        rebuild_schedule: false,
-        backfill: None,
-    },
 ];
 
 /// Migration 0004: `decks.name_key` for every deck, deleted ones included.
@@ -241,7 +234,6 @@ mod tests {
             (6, 4_814_555_124_323_229_936),
             (7, 5_098_997_871_159_998_159),
             (8, 5_300_822_826_126_250_477),
-            (9, 12_167_028_251_385_340_939),
         ];
         assert_eq!(
             MIGRATIONS.len(),

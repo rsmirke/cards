@@ -14,8 +14,8 @@ fn grid(start: i64, lengths: &[i64]) -> DayGrid {
     DayGrid::new(bounds).unwrap()
 }
 
-fn review(at: i64, passed: bool, duration_ms: i64) -> CountedReview {
-    CountedReview {
+fn review(at: i64, passed: bool, duration_ms: i64) -> ActivityReview {
+    ActivityReview {
         at,
         passed,
         duration_ms,
@@ -206,6 +206,26 @@ fn counted_reviews_skip_undone_ones_and_start_after_the_last_reset() {
         .collect();
     // The second reset is undone, so the first one starts the card's life.
     assert_eq!(ids, ["e003", "e008"]);
+}
+
+#[test]
+fn activity_counts_reviews_before_a_reset_but_not_undone_ones() {
+    let log = [
+        entry(1, T0, pass()),
+        entry(2, T0 + 1, EventKind::Reset),
+        entry(3, T0 + 2, pass()),
+        entry(4, T0 + 3, fail()),
+        entry(
+            5,
+            T0 + 4,
+            EventKind::Undo {
+                undoes: "e004".into(),
+            },
+        ),
+    ];
+    let ids = |v: Vec<&ReviewEvent>| v.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(activity_reviews(&log).unwrap()), ["e001", "e003"]);
+    assert_eq!(ids(counted_reviews(&log).unwrap()), ["e003"]);
 }
 
 #[test]

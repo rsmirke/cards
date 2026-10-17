@@ -148,7 +148,7 @@ Storage rules:
 ### 4.7 Stats
 - Per deck and global: reviews per day and time studied per day (last 30 days, bar chart), pass rate, due forecast (next 14 days), and **expected retention** today = mean FSRS retrievability over reviewed cards.
 - Card information (#39): created / edited, reviews, lapses, pass rate, stability, difficulty, retrievability now, next due, and the history (surviving reviews with grade and interval, resets as markers).
-- Counts use surviving entries only (ADR 0028, 0032); days follow the stored day start hour.
+- Activity (reviews, time, pass rate) counts every review that is not undone, whatever resets came later; a reset restarts only the memory side (retention, forecast, a card's reps, lapses, stability, difficulty). Undo removes a review everywhere (ADR 0028, 0032). Days follow the stored day start hour.
 - Drawn with `GtkDrawingArea` + Cairo, theme colors only. No chart library.
 - All computations are pure functions in `core::stats`, tested. *Core part done (ADR 0032); the pages are still to come.*
 

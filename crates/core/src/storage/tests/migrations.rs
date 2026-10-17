@@ -499,35 +499,3 @@ fn migration_0008_adds_tags_and_keeps_everything_else() {
     );
     assert_eq!(e.backups().len(), 1);
 }
-
-/// Migration 0009 only adds an index on resets.
-#[test]
-fn migration_0009_adds_the_resets_index_and_keeps_everything_else() {
-    use crate::test_support::schedule_table;
-
-    let e = env();
-    let before = {
-        let v8 = e.open_with(DAY0, &MIGRATIONS[..8]).unwrap();
-        insert_sample(&v8.conn);
-        assert!(!indexes(&v8.conn).contains(&"review_events_resets".to_owned()));
-        (
-            schedule_table(&v8),
-            v8.review_events(CARD).unwrap(),
-            v8.list_cards(DECK).unwrap(),
-        )
-    };
-    let store = e.open_with(DAY0, &MIGRATIONS[..9]).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 9);
-    assert!(indexes(&store.conn).contains(&"review_events_resets".to_owned()));
-    let index = schema_sql(&store.conn, "review_events_resets");
-    assert!(index.contains("WHERE kind = 'reset'"), "{index}");
-    assert_eq!(
-        (
-            schedule_table(&store),
-            store.review_events(CARD).unwrap(),
-            store.list_cards(DECK).unwrap()
-        ),
-        before
-    );
-    assert_eq!(e.backups().len(), 1);
-}

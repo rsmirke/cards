@@ -133,52 +133,60 @@ fn deleted_cards_and_decks_do_not_count() {
     ));
 }
 
-#[test]
-fn undone_reviews_and_reviews_before_a_reset_do_not_count() {
-    let (mut store, _, cards) = store_with_decks(1, 1);
-    let at = NOW - 3 * DAY_MS;
-    answer(&mut store, &cards[0], Grade::Pass, at, 1);
-    store.reset_card(&cards[0], at + 1).unwrap();
-    answer(&mut store, &cards[0], Grade::Pass, at + 2, 1);
-    let undone = answer(&mut store, &cards[0], Grade::Fail, at + 3, 1);
-    store.undo(&cards[0], &undone.id, at + 4).unwrap();
-    let s = stats_of(&store, Scope::All);
-    assert_eq!(
-        s.days
-            .iter()
-            .map(|d| (d.reviews, d.passes))
-            .fold((0, 0), |a, d| (a.0 + d.0, a.1 + d.1)),
-        (1, 1)
-    );
-    // A reset that is no longer the latest entry cannot be undone.
-    let log = store.review_events(&cards[0]).unwrap();
-    let reset = surviving(&log)
-        .unwrap()
-        .iter()
-        .find(|e| e.kind == EventKind::Reset)
-        .unwrap()
-        .id
-        .clone();
-    assert!(
-        store.undo(&cards[0], &reset, at + 5).is_err(),
-        "not the latest"
-    );
+fn review_totals(s: &Stats) -> (u32, u32, i64) {
+    s.days.iter().fold((0, 0, 0), |a, d| {
+        (a.0 + d.reviews, a.1 + d.passes, a.2 + d.duration_ms)
+    })
 }
 
 #[test]
-fn undoing_the_latest_reset_brings_the_reviews_before_it_back() {
+fn a_reset_does_not_change_the_past_days_but_an_undo_does() {
     let (mut store, _, cards) = store_with_decks(1, 1);
-    let total = |store: &Store| -> u32 {
-        stats_of(store, Scope::All)
-            .days
-            .iter()
-            .map(|d| d.reviews)
-            .sum()
-    };
+    let at = NOW - 3 * DAY_MS;
+    answer(&mut store, &cards[0], Grade::Pass, at, 2);
+    answer(&mut store, &cards[0], Grade::Fail, at + 1, 3);
+    let before = stats_of(&store, Scope::All);
+    assert_eq!(review_totals(&before), (2, 1, 5_000));
+    assert_eq!(before.scheduled_cards, 1);
+
+    // The reset restarts the memory side only.
+    store.reset_card(&cards[0], at + 2).unwrap();
+    let reset = stats_of(&store, Scope::All);
+    assert_eq!(reset.days, before.days);
+    assert_eq!(reset.pass_rate, before.pass_rate);
+    assert_eq!(
+        (
+            reset.scheduled_cards,
+            reset.expected_retention,
+            reset.overdue
+        ),
+        (0, None, 0)
+    );
+    assert_eq!(reset.forecast, vec![0; 14]);
+
+    // Reviews after the reset add to the activity.
+    answer(&mut store, &cards[0], Grade::Pass, at + 3, 4);
+    let after = stats_of(&store, Scope::All);
+    assert_eq!(review_totals(&after), (3, 2, 9_000));
+    assert_eq!(after.scheduled_cards, 1);
+
+    // An undo removes the review everywhere.
+    let log = store.review_events(&cards[0]).unwrap();
+    let last = surviving(&log).unwrap().last().unwrap().id.clone();
+    store.undo(&cards[0], &last, at + 4).unwrap();
+    let undone = stats_of(&store, Scope::All);
+    assert_eq!(review_totals(&undone), (2, 1, 5_000));
+    assert_eq!(undone.scheduled_cards, 0);
+}
+
+#[test]
+fn undoing_the_latest_reset_brings_the_memory_back_and_keeps_the_activity() {
+    let (mut store, _, cards) = store_with_decks(1, 1);
+    let total = |store: &Store| review_totals(&stats_of(store, Scope::All)).0;
     let at = NOW - 3 * DAY_MS;
     answer(&mut store, &cards[0], Grade::Pass, at, 1);
     let reset = store.reset_card(&cards[0], at + 1).unwrap();
-    assert_eq!(total(&store), 0);
+    assert_eq!(total(&store), 1);
     let info = store.card_info(&cards[0], NOW).unwrap();
     assert_eq!(
         (info.reviews, info.history.len(), info.next_due),
@@ -189,26 +197,6 @@ fn undoing_the_latest_reset_brings_the_reviews_before_it_back() {
     let info = store.card_info(&cards[0], NOW).unwrap();
     assert_eq!((info.reviews, info.history.len()), (1, 1));
     assert!(info.next_due.is_some());
-}
-
-/// The index of migration 0009 is what makes the statistics fast; a time
-/// bound alone would not notice the planner ignoring it.
-#[test]
-fn the_window_query_uses_the_resets_index() {
-    let store = Store::in_memory();
-    let mut stmt = store
-        .conn
-        .prepare(&format!("EXPLAIN QUERY PLAN {COUNTED_IN_WINDOW}"))
-        .unwrap();
-    let plan: Vec<String> = stmt
-        .query_map(params![None::<&str>, 0, 1], |r| r.get(3))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert!(
-        plan.iter().any(|d| d.contains("review_events_resets")),
-        "{plan:#?}"
-    );
 }
 
 #[test]
@@ -339,10 +327,10 @@ fn oracle(store: &Store, deck: Option<&str>) -> Stats {
         for card in store.list_cards(&d.id).unwrap() {
             let log = store.review_events(&card.id).unwrap();
             reviews.extend(
-                stats::counted_reviews(&log)
+                stats::activity_reviews(&log)
                     .unwrap()
                     .into_iter()
-                    .filter_map(stats::as_counted),
+                    .filter_map(stats::as_activity),
             );
             if let CardState::Scheduled(s) = scheduler.rebuild_state(&card.id, &log).unwrap() {
                 cards.push(stats::ScheduledCard {
@@ -541,8 +529,9 @@ fn big_store() -> (Store, Vec<String>, String) {
 #[test]
 fn stats_are_fast_at_five_thousand_cards_and_a_hundred_thousand_reviews() {
     let (store, decks, heavy) = big_store();
-    // 100,000 reviews, 200 undone, the 11 reviews before each of the 100 resets.
-    let expected = 100_000 + HEAVY - 200 - 100 * 11;
+    // 100,000 reviews and the heavy card's, less the 200 undone ones; the
+    // 100 resets take nothing from the activity.
+    let expected = 100_000 + HEAVY - 200;
 
     let (all_time, all) = fastest("stats, all decks", 3, || stats_of(&store, Scope::All));
     assert_eq!(
@@ -569,5 +558,5 @@ fn stats_are_fast_at_five_thousand_cards_and_a_hundred_thousand_reviews() {
 
 /// About 10 times what was measured on a debug build (ADR 0025): 0.3 s for
 /// the statistics, 10 ms for one card.
-const LIMIT: Duration = Duration::from_secs(3);
+const LIMIT: Duration = Duration::from_secs(2);
 const CARD_LIMIT: Duration = Duration::from_millis(100);

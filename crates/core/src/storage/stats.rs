@@ -5,11 +5,10 @@ use rusqlite::{Connection, params};
 use super::Store;
 use super::cards::live_card;
 use super::decks::ensure_live_deck;
-use super::review::counted_event;
 use super::schedule::{read_log, to_f32};
 use super::settings::scheduler_in;
 use crate::error::Result;
-use crate::stats::{CardInfo, CountedReview, DayGrid, ScheduledCard, Stats, card_info};
+use crate::stats::{ActivityReview, CardInfo, DayGrid, ScheduledCard, Stats, card_info};
 
 /// The cards a [`Store::stats`] call covers. Deleted cards and decks never
 /// count.
@@ -36,7 +35,8 @@ impl Store {
     /// `past`; the forecast covers the days of `ahead` (day 0 takes the
     /// overdue cards too). The expected retention is the mean recall
     /// probability of every live scheduled card at `now`. All counts use
-    /// surviving entries only (ADR 0028, 0032).
+    /// surviving entries only (ADR 0028, 0032): the activity counts every
+    /// review no undo cancels, a reset only restarts the memory side.
     ///
     /// # Errors
     /// [`Error::DeckNotFound`](crate::Error::DeckNotFound) for a missing or
@@ -52,7 +52,7 @@ impl Store {
         if let Scope::Deck(id) = scope {
             ensure_live_deck(&tx, id)?;
         }
-        let reviews = counted_in_window(&tx, scope.deck(), past.start(), past.end())?;
+        let reviews = activity_in_window(&tx, scope.deck(), past.start(), past.end())?;
         let cards = scheduled_cards(&tx, scope.deck())?;
         // Read only: ending it commits nothing.
         tx.finish()?;
@@ -75,29 +75,30 @@ impl Store {
     }
 }
 
-/// The counted reviews of live cards in live decks (`?1`: the deck, or NULL
-/// for all) made in `[?2, ?3)`.
-const COUNTED_IN_WINDOW: &str = concat!(
-    "SELECT e.reviewed_at, e.grade = 'pass', e.duration_ms
+/// The surviving reviews of live cards in live decks (`?1`: the deck, or
+/// NULL for all) made in `[?2, ?3)`: not cancelled by an undo, whatever
+/// resets came later (ADR 0032). The daily limits have their own, narrower
+/// rule (`review.rs`).
+const ACTIVITY_IN_WINDOW: &str = "SELECT e.reviewed_at, e.grade = 'pass', e.duration_ms
      FROM review_events e
      JOIN cards c ON c.id = e.card_id JOIN decks d ON d.id = c.deck_id
      WHERE c.deleted_at IS NULL AND d.deleted_at IS NULL
        AND (?1 IS NULL OR c.deck_id = ?1)
-       AND e.reviewed_at >= ?2 AND e.reviewed_at < ?3 AND ",
-    counted_event!()
-);
+       AND e.reviewed_at >= ?2 AND e.reviewed_at < ?3
+       AND e.kind = 'review'
+       AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = e.id)";
 
-/// The counted reviews of live cards in live decks (of `deck`, if given)
+/// The surviving reviews of live cards in live decks (of `deck`, if given)
 /// made in `[from, to)`.
-fn counted_in_window(
+fn activity_in_window(
     conn: &Connection,
     deck: Option<&str>,
     from: i64,
     to: i64,
-) -> Result<Vec<CountedReview>> {
-    let mut stmt = conn.prepare(COUNTED_IN_WINDOW)?;
+) -> Result<Vec<ActivityReview>> {
+    let mut stmt = conn.prepare(ACTIVITY_IN_WINDOW)?;
     let rows = stmt.query_map(params![deck, from, to], |r| {
-        Ok(CountedReview {
+        Ok(ActivityReview {
             at: r.get(0)?,
             passed: r.get(1)?,
             duration_ms: r.get(2)?,

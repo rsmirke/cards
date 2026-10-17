@@ -1,9 +1,12 @@
 //! Statistics over the review log, as pure functions (SPEC §4.7, ADR 0032).
 //!
-//! Every count uses the entries that survive (ADR 0028): a review no undo
-//! cancels, made after the card's last reset that no undo cancels.
-//! [`counted_reviews`] is that rule for one card's log; the store's SQL
-//! (`storage::stats`) applies the same rule and is tested against it.
+//! Every count uses the entries that survive (ADR 0028, 0032). Activity
+//! (reviews, passes and time per day) counts every review no undo cancels,
+//! whatever resets came later: the studying happened. [`activity_reviews`]
+//! is that rule for one card's log; the store's SQL (`storage::stats`)
+//! applies it and is tested against it. The memory side (schedule,
+//! retention, forecast, and a card's reps and lapses) starts afresh at a
+//! reset: [`counted_reviews`] is that rule.
 //!
 //! Core knows no time zones (ADR 0006, 0014). Days come from a
 //! [`DayGrid`], the UTC timestamps at which consecutive study days begin,
@@ -76,9 +79,9 @@ pub struct DayActivity {
     pub duration_ms: i64,
 }
 
-/// One counted review, as the statistics need it.
+/// One review of the activity, as the statistics need it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CountedReview {
+pub(crate) struct ActivityReview {
     pub at: i64,
     pub passed: bool,
     pub duration_ms: i64,
@@ -114,13 +117,13 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// The statistics of `reviews` (the counted ones; those outside `past`
+    /// The statistics of `reviews` (the surviving ones; those outside `past`
     /// are ignored) and `cards` (every live scheduled card) at `now`.
     pub(crate) fn compute(
         past: &DayGrid,
         ahead: &DayGrid,
         now: i64,
-        reviews: impl IntoIterator<Item = CountedReview>,
+        reviews: impl IntoIterator<Item = ActivityReview>,
         cards: impl IntoIterator<Item = ScheduledCard> + Clone,
     ) -> Self {
         let days = activity_by_day(past, reviews);
@@ -140,7 +143,7 @@ impl Stats {
 /// Reviews, passes and time per day of `grid`.
 pub(crate) fn activity_by_day(
     grid: &DayGrid,
-    reviews: impl IntoIterator<Item = CountedReview>,
+    reviews: impl IntoIterator<Item = ActivityReview>,
 ) -> Vec<DayActivity> {
     let mut days = vec![DayActivity::default(); grid.days()];
     for r in reviews {
@@ -228,8 +231,8 @@ pub(crate) fn expected_retention(
     (count, (count > 0).then(|| sum / f64::from(count)))
 }
 
-/// The reviews of one card's log that count: not undone, after the last
-/// surviving reset, oldest first (ADR 0028).
+/// The reviews of one card's log that its memory counts: not undone, after
+/// the last surviving reset, oldest first (ADR 0028).
 ///
 /// # Errors
 /// [`Error::InvalidUndo`], as [`surviving`].
@@ -243,10 +246,24 @@ pub(crate) fn counted_reviews(log: &[ReviewEvent]) -> Result<Vec<&ReviewEvent>> 
     Ok(kept)
 }
 
-/// The counted review `e` as the statistics need it; `None` for a reset or
+/// The reviews of one card's log that its activity counts: not undone,
+/// whatever resets came later, oldest first (ADR 0032).
+///
+/// # Errors
+/// [`Error::InvalidUndo`], as [`surviving`].
+///
+/// The store counts these in SQL; this is the rule the tests check it against.
+#[cfg(test)]
+pub(crate) fn activity_reviews(log: &[ReviewEvent]) -> Result<Vec<&ReviewEvent>> {
+    let mut kept = surviving(log)?;
+    kept.retain(|e| matches!(e.kind, EventKind::Review(_)));
+    Ok(kept)
+}
+
+/// The review `e` as the statistics need it; `None` for a reset or
 /// an undo.
-pub(crate) fn as_counted(e: &ReviewEvent) -> Option<CountedReview> {
-    Some(CountedReview {
+pub(crate) fn as_activity(e: &ReviewEvent) -> Option<ActivityReview> {
+    Some(ActivityReview {
         at: e.reviewed_at,
         passed: e.grade()? == Grade::Pass,
         duration_ms: e.duration_ms,
