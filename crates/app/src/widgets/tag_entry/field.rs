@@ -151,9 +151,10 @@ pub fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
         }
     }
     kept.extend(last);
+    // The space typed after a comma is not part of the next name.
     Split {
         add,
-        rest: kept.join(","),
+        rest: kept.join(",").trim_start().to_owned(),
     }
 }
 
@@ -188,6 +189,9 @@ pub fn check(pills: &[String], typed: &str) -> TagsCheck {
 
 fn error_text(err: &TagFieldError) -> String {
     match &err.error {
+        // Not reached from the tag entry: `split_typed` drops blank names
+        // before a comma, and `parse_tag_field` ignores a blank last one.
+        // Kept so every error of the store has a text.
         Error::EmptyTagName => "This tag is empty: remove the extra comma".to_owned(),
         Error::TagNameTooLong { .. } => format!(
             "This tag is too long (the limit is {} bytes)",
@@ -297,6 +301,12 @@ mod tests {
         // Typing the full name of a tag still offers it.
         let found = suggestions(&all, &[], "maths", 5);
         assert_eq!(names(&found), ["maths"]);
+        // Editing an earlier piece: only the other pieces are excluded.
+        let found = suggestions(&all, &[], "mat, maths", 3);
+        assert_eq!(names(&found), ["math-art", "Mathématiques"]);
+        // And the pills.
+        let found = suggestions(&all, &strings(&["math-art"]), "mat, maths", 3);
+        assert_eq!(names(&found), ["Mathématiques"]);
     }
 
     #[test]
@@ -351,7 +361,7 @@ mod tests {
             split(&[], "a, b ,c, d"),
             Split {
                 add: strings(&["a", "b", "c"]),
-                rest: " d".to_owned()
+                rest: "d".to_owned()
             }
         );
         // Blank names and names already there are dropped.
@@ -437,6 +447,16 @@ mod tests {
             check(&[], "a\0").error.as_deref(),
             Some("This tag contains a null character")
         );
+    }
+
+    #[test]
+    fn no_empty_name_reaches_the_check() {
+        // Blank names are dropped by the split, and a blank typed name is
+        // ignored, so "This tag is empty" is never shown by the entry.
+        let split = split_typed(&[], "a,, ,b,", false);
+        assert_eq!(split.add, strings(&["a", "b"]));
+        assert_eq!(check(&split.add, &split.rest).error, None);
+        assert_eq!(check(&strings(&["a"]), "  ").error, None);
     }
 
     #[test]

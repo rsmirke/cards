@@ -115,6 +115,8 @@ mod imp {
         #[template_child]
         pub mode_toggles: TemplateChild<adw::ToggleGroup>,
         #[template_child]
+        pub mode_bar: TemplateChild<gtk::ActionBar>,
+        #[template_child]
         pub preview_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub preview_front: TemplateChild<gtk::Box>,
@@ -351,7 +353,7 @@ impl CardEditor {
 
     /// Changes of the tags field count as edits.
     fn setup_tags(&self) {
-        self.imp().tag_entry.connect_changed(glib::clone!(
+        self.imp().tag_entry.set_on_changed(glib::clone!(
             #[weak(rename_to = editor)]
             self,
             move || editor.update_actions()
@@ -377,8 +379,13 @@ impl CardEditor {
     /// tags alone.
     fn read_card_tags(&self, card_id: &str) -> Option<Vec<String>> {
         let imp = self.imp();
-        let state = imp.state.get()?;
-        match state.card_tags(card_id) {
+        let read = match imp.state.get() {
+            Some(state) => state.card_tags(card_id).map_err(|err| err.to_string()),
+            // Cannot happen: `new` sets the state before reading. Treated
+            // like a failed read, so a save never wipes the tags.
+            None => Err("the editor has no data".to_owned()),
+        };
+        match read {
             Ok(card_tags) => Some(card_tags.into_iter().map(|tag| tag.name).collect()),
             Err(err) => {
                 imp.tag_entry
@@ -433,7 +440,7 @@ impl CardEditor {
 
     fn set_narrow(&self, narrow: bool) {
         self.imp().narrow.set(narrow);
-        self.apply_layout();
+        self.apply_layout_keeping_focus();
     }
 
     /// Shows the panes `layout::panes` picks, and renders the preview if it
@@ -447,26 +454,41 @@ impl CardEditor {
         self.refresh_preview();
     }
 
-    /// The toggle changed: show the other pane. The focus must not stay in
-    /// a pane that is hidden, where keys would go nowhere: switching to the
-    /// preview keeps it on the toggle, and switching back to the text puts
-    /// it in the front if it was lost.
+    /// The toggle changed: show the other pane.
     fn mode_changed(&self) {
+        self.apply_layout_keeping_focus();
+    }
+
+    /// Applies the layout, then moves the focus if it would be left where
+    /// keys go nowhere (`layout::focus_after`). Where the focus is, is read
+    /// before the panes change. On a breakpoint change the setters have
+    /// already shown or hidden the toggle's bar (`AdwBreakpoint::apply`
+    /// runs after them), so a focus on the hidden toggle reads as on the
+    /// toggle with no bar, or as lost if GTK has moved it already.
+    fn apply_layout_keeping_focus(&self) {
         let imp = self.imp();
+        let place = self.focus_place();
         self.apply_layout();
-        let lost = self.focus().is_none_or(|focus| {
-            !focus.is_mapped() || focus.is_ancestor(&*imp.edit_pane) && !imp.edit_pane.is_visible()
-        });
-        if !lost {
-            return;
-        }
-        match self.mode() {
-            Mode::Preview => {
-                imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
-            }
-            Mode::Edit => {
+        let panes = layout::panes(imp.narrow.get(), self.mode());
+        match layout::focus_after(place, panes, imp.mode_bar.is_visible()) {
+            Some(layout::Target::Front) => {
                 imp.front_view.grab_focus();
             }
+            Some(layout::Target::Toggle) => {
+                imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
+            }
+            None => {}
+        }
+    }
+
+    fn focus_place(&self) -> layout::Place {
+        let imp = self.imp();
+        match self.focus() {
+            None => layout::Place::Lost,
+            Some(focus) if !focus.is_mapped() || !focus.is_focusable() => layout::Place::Lost,
+            Some(focus) if focus.is_ancestor(&*imp.edit_pane) => layout::Place::Edit,
+            Some(focus) if focus.is_ancestor(&*imp.mode_bar) => layout::Place::Toggle,
+            Some(_) => layout::Place::Other,
         }
     }
 
@@ -911,9 +933,17 @@ mod tests {
             assert!(!editor.can_close());
             editor.save(false);
             assert_eq!(state.list_tagged_cards(&deck).unwrap().len(), 1);
-            // The new tags are suggested from now on.
+            // The new tags are suggested from now on: without the pill,
+            // "mat" finds "maths".
+            imp.tag_entry.set_tags(&[]);
             imp.tag_entry.type_text("mat");
-            assert_eq!(imp.tag_entry.suggest_for_test(), []);
+            let found: Vec<String> = imp
+                .tag_entry
+                .suggest_for_test()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+            assert_eq!(found, ["maths"]);
         });
     }
 
@@ -1032,6 +1062,58 @@ mod tests {
             editor.save(true);
             assert_eq!(editor.mode(), Mode::Edit);
             assert!(imp.edit_pane.is_visible());
+        });
+    }
+
+    /// Runs the main loop until `done` or two seconds have passed.
+    fn settle_until(done: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !done() && std::time::Instant::now() < end {
+            while context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn switching_panes_keeps_the_focus_where_keys_reach() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, _state, _deck, editor, _saved) = editor_over(None);
+            let imp = editor.imp();
+            // Wide enough that the breakpoint stays off by itself.
+            let window = adw::Window::builder()
+                .default_width(1000)
+                .default_height(720)
+                .build();
+            window.present();
+            editor.present(Some(&window));
+            settle_until(|| imp.front_view.is_mapped());
+            assert!(imp.front_view.is_mapped(), "the editor did not show");
+            editor.set_focus(Some(&*imp.front_view));
+            let toggle_focused = || {
+                editor
+                    .focus()
+                    .is_some_and(|f| f.is_ancestor(&*imp.mode_toggles))
+            };
+
+            // Narrow, as the breakpoint would make it: its setter shows the
+            // bar, then `apply` sets narrow.
+            imp.mode_bar.set_visible(true);
+            editor.set_narrow(true);
+            settle_until(|| imp.mode_toggles.is_mapped());
+            assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
+            // To the preview with the focus in the text: on the toggle.
+            imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
+            assert!(toggle_focused(), "focus: {:?}", editor.focus());
+            // Back to the text: the toggle keeps it (the user is there).
+            imp.mode_toggles.set_active_name(Some(Mode::EDIT));
+            assert!(toggle_focused());
+            // Wide again, the bar hidden by the setter: to the front.
+            imp.mode_bar.set_visible(false);
+            editor.set_narrow(false);
+            assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
+            editor.force_close();
+            window.destroy();
         });
     }
 

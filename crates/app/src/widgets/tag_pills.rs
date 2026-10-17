@@ -185,8 +185,9 @@ impl TagPills {
     }
 
     /// Calls `f` with the index of a pill whose remove button was used,
-    /// and whether by Backspace.
-    pub fn connect_remove(&self, f: impl Fn(usize, bool) + 'static) {
+    /// and whether by Backspace. There is one such callback: setting
+    /// another replaces it.
+    pub fn set_on_remove(&self, f: impl Fn(usize, bool) + 'static) {
         let f: Rc<OnRemove> = Rc::new(f);
         self.imp().on_remove.replace(Some(Callback::new(f)));
     }
@@ -309,7 +310,7 @@ impl TagPills {
         }
     }
 
-    /// A pill with a remove button, which tells [`Self::connect_remove`]'s
+    /// A pill with a remove button, which tells [`Self::set_on_remove`]'s
     /// callback which pill it belongs to when used.
     fn removable_pill(&self) -> Pill {
         let label = pill_label();
@@ -521,7 +522,7 @@ mod tests {
             // The callback is told which pill.
             let removed = std::rc::Rc::new(std::cell::Cell::new(None));
             let sink = std::rc::Rc::clone(&removed);
-            pills.connect_remove(move |index, backspace| sink.set(Some((index, backspace))));
+            pills.set_on_remove(move |index, backspace| sink.set(Some((index, backspace))));
             buttons[1].emit_clicked();
             assert_eq!(removed.get(), Some((1, false)));
             // Fewer tags: the buttons of hidden pills are not stops.
