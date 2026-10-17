@@ -100,6 +100,12 @@ impl CardObject {
         self.imp().tags.borrow()
     }
 
+    /// Whether either preview has been made (they are made on first use).
+    #[cfg(test)]
+    pub fn has_previews(&self) -> bool {
+        self.imp().front.get().is_some() || self.imp().back.get().is_some()
+    }
+
     /// What a screen reader says for the row (see [`row_label`]).
     pub fn row_label(&self) -> String {
         row_label(

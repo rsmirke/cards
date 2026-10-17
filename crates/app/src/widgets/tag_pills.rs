@@ -137,6 +137,15 @@ impl TagPills {
         self.imp().names.borrow().clone()
     }
 
+    /// Every pill label made so far, the "+N" pill last, shown or not.
+    #[cfg(test)]
+    pub fn pill_widgets(&self) -> Vec<gtk::Label> {
+        let imp = self.imp();
+        let mut all = imp.pills.borrow().clone();
+        all.extend(imp.overflow.borrow().clone());
+        all
+    }
+
     /// The labels of the pills on screen, in order, the "+N" pill last.
     #[cfg(test)]
     fn shown_texts(&self) -> Vec<String> {
@@ -293,6 +302,21 @@ mod tests {
             pills.set_single_line(true);
             assert_eq!(pills.shown_texts(), ["tag 0", "tag 1", "tag 2", "+7"]);
             assert!(pills.imp().wrap_box.first_child().is_none());
+            // Back to wrapping: the single line, "+N" pill included, is
+            // emptied, and every tag wraps again.
+            pills.set_single_line(false);
+            assert_eq!(pills.shown_texts(), many);
+            assert!(pills.imp().line_box.first_child().is_none());
+            // And to a single line again, with a new "+N" pill.
+            pills.set_single_line(true);
+            assert_eq!(pills.shown_texts(), ["tag 0", "tag 1", "tag 2", "+7"]);
+            assert!(pills.imp().wrap_box.first_child().is_none());
+            let last = pills
+                .imp()
+                .line_box
+                .last_child()
+                .and_downcast::<gtk::Label>();
+            assert_eq!(last.map(|l| l.label().to_string()).as_deref(), Some("+7"));
         });
     }
 }

@@ -963,6 +963,24 @@ mod tests {
     }
 
     #[test]
+    fn the_study_bar_follows_the_width_and_the_cards() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, state, page, ids) = page_of(1);
+            let bar = || page.imp().study_bar.is_revealed();
+            assert!(!bar());
+            page.set_compact(true);
+            assert!(bar());
+            // The last card goes: the empty state stands alone.
+            page.delete(&ids[0]);
+            assert!(!bar());
+            undo_card_delete(&state, &ids[0], &page.downgrade(), None);
+            assert!(bar());
+            page.set_compact(false);
+            assert!(!bar());
+        });
+    }
+
+    #[test]
     fn an_undo_after_the_card_was_studied_again_changes_nothing() {
         crate::testing::with_gtk(|| {
             let (_tmp, state, page, ids) = page_of(1);

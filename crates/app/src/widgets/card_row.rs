@@ -132,7 +132,7 @@ impl CardRow {
         // Without a back or tags, the row is its front alone.
         imp.detail_box
             .set_visible(!back.is_empty() || !tags.is_empty());
-        rows::label_menu_button(&imp.menu_button, front);
+        rows::label_menu_button(&imp.menu_button, text::spoken_front(front));
         let suspended = item.card().suspended;
         imp.suspended_icon.set_visible(suspended);
         // The row offers the one of the two that changes something.
@@ -219,24 +219,79 @@ mod tests {
         });
     }
 
-    /// Scrolling binds recycled rows over and over: binding one row to each
-    /// of 5,000 cards (making each preview the first time) must stay fast.
     #[test]
-    fn binding_a_row_to_5000_cards_is_fast() {
-        let elapsed = crate::testing::with_widgets(|| {
+    fn a_narrow_row_shows_fewer_pills() {
+        crate::testing::with_widgets(|| {
+            let row = CardRow::default();
+            let pills = &row.imp().tag_pills;
+            assert_eq!(pills.max_shown(), ROW_PILLS);
+            row.set_compact(true);
+            assert_eq!(pills.max_shown(), COMPACT_ROW_PILLS);
+            row.set_compact(false);
+            assert_eq!(pills.max_shown(), ROW_PILLS);
+        });
+    }
+
+    #[test]
+    fn the_menu_is_built_once_on_first_open() {
+        crate::testing::with_widgets(|| {
+            let window = gtk::Window::new();
+            let row = CardRow::default();
+            window.set_child(Some(&row));
+            window.present();
+            let button = &row.imp().menu_button;
+            assert!(button.popover().is_none());
+            button.popup();
+            let first = button.popover().expect("opening the menu builds it");
+            button.popdown();
+            button.popup();
+            assert_eq!(button.popover(), Some(first));
+            button.popdown();
+            window.destroy();
+        });
+    }
+
+    /// Scrolling binds recycled rows over and over. What keeps it fast is
+    /// checked as work, not time, so the test holds on a loaded machine
+    /// (#67): after a first bind that makes the row's pills, binding it to
+    /// 4,000 of 5,000 cards makes no widget (the same pill labels, no menu popover),
+    /// and only the cards bound get their previews made. The CPU time of
+    /// the thread (not the wall clock, which grows while the thread waits
+    /// for a CPU) is printed with `RAPPEL_TIMINGS=1` and bounded only
+    /// against a large regression: about 100 ms in a debug build (most of
+    /// it making each card's two previews), 380 ms with three busy threads
+    /// per CPU (shared caches slow the thread even while it runs).
+    #[test]
+    fn binding_a_row_to_thousands_of_cards_makes_no_widgets() {
+        let cpu = crate::testing::with_widgets(|| {
             let items: Vec<CardObject> = (0..5_000).map(card).collect();
             let row = CardRow::default();
-            let start = Instant::now();
-            for item in &items {
+            let pills = &row.imp().tag_pills;
+            // Card 5 has the most tags: every pill and the "+N" pill exist.
+            row.bind(&items[5]);
+            let made = pills.pill_widgets();
+            let cpu_start = crate::testing::thread_cpu_time();
+            let wall = Instant::now();
+            for item in &items[..4_000] {
                 row.bind(item);
                 drop(item.row_label());
                 row.unbind();
             }
-            start.elapsed()
+            crate::testing::print_timing("CardRow::bind, 4,000 cards (wall)", wall.elapsed());
+            let cpu = cpu_start
+                .zip(crate::testing::thread_cpu_time())
+                .map(|(start, end)| end.saturating_sub(start));
+            assert_eq!(pills.pill_widgets(), made);
+            assert!(row.imp().menu_button.popover().is_none());
+            // Previews are made only for the cards a row showed.
+            assert!(items[..4_000].iter().all(CardObject::has_previews));
+            assert!(!items[4_000..].iter().any(CardObject::has_previews));
+            cpu
         });
-        crate::testing::print_timing("CardRow::bind, 5,000 cards", elapsed);
-        // About 115 ms in a debug build (30 ms of it binding, the rest making
-        // each card's two previews once); the bound leaves 10 times that.
-        assert!(elapsed < Duration::from_millis(1_200), "{elapsed:?}");
+        if let Some(cpu) = cpu {
+            crate::testing::print_timing("CardRow::bind, 4,000 cards (CPU)", cpu);
+            // Over five times the time measured under load.
+            assert!(cpu < Duration::from_secs(2), "{cpu:?}");
+        }
     }
 }

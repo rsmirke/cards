@@ -38,7 +38,7 @@ Rows are recycled by the `GtkListView`, so the costs that matter are opening the
 
 - `CardObject` makes the front and back previews when a row first asks (as `BrowseItem` does), not when the deck opens.
 - `TagPills::set_tags` keeps its pill labels and only relabels them; it does nothing when the tags are those already shown. No widget is made or destroyed on a bind after the first few.
-- A row's ⋮ menu is given to its button on first use (`ui::rows::menu_on_demand`, `gtk_menu_button_set_create_popup_func`). Building the six-item popover was more than half the cost of making a row, and most rows' menus are never opened.
+- A row's ⋮ menu is given to its button on first use (`ui::rows::menu_on_demand`, `gtk_menu_button_set_create_popup_func`). Building the six-item popover was more than half the cost of making a row, and most rows' menus are never opened. GTK 4.24 calls that function on every open, and setting the model again would build a new popover each time, so the model is set only once (a test opens a menu twice and gets the same popover).
 
 Measured on one machine, debug build, the 5,000-card scratch deck (`fill_scratch_db <dir> 5000 --due 200 --tags --suspended 50`), five runs each under Xvfb with the Cairo renderer, from activating the deck row to the first frame after the push (the `deck page opened` debug log, below):
 
@@ -49,7 +49,7 @@ Measured on one machine, debug build, the 5,000-card scratch deck (`fill_scratch
 | making one row (100 rows, warm) | 0.53 ms | 0.11 ms |
 | binding one row to all 5,000 cards in turn | 92 ms (previews made at open) | 115 ms with the previews made then, 30 ms once made |
 
-`binding_a_row_to_5000_cards_is_fast` keeps the last at a bound of ten times its time. `DecksPage::open` logs `built_ms` and `first_frame_ms` at debug level (`RUST_LOG=rappel=debug`), from the frame clock's first `after-paint` after the push; no card content is logged.
+`binding_a_row_to_thousands_of_cards_makes_no_widgets` checks the work rather than the clock, so it holds on a loaded machine (#67): after a first bind, binding a row to 4,000 of 5,000 cards makes no pill label and no popover, and only those 4,000 cards get previews. It also bounds the thread's CPU time (from `/proc/thread-self/stat`, `testing::thread_cpu_time`) at 2 s, against about 100 ms idle and 380 ms with three busy threads per CPU; a wall-clock bound failed under such load. `DecksPage::open` logs `built_ms` and `first_frame_ms` at debug level (`RUST_LOG=rappel=debug`), from the frame clock's first `after-paint` after the push; no card content is logged.
 
 ### Deck page subtitle and empty state
 
@@ -60,4 +60,5 @@ The subtitle uses `ui::text::due_new_line` ("1,234 due · 20 new"), built from `
 - The All Cards rows (`browser_row`) are still the old layout. Their overhaul should reuse `TagPills` (single line, `compact` bound as here), the `box.header.card-row` structure and its CSS, and `menu_on_demand`, so both lists look and cost the same.
 - The editor's tag field can use `TagPills` in its wrapping form.
 - Card rows follow libadwaita's row styles through their node names, like the deck rows: a libadwaita change to `row > box.header` restyles both.
+- A cut pill name and the tags behind "+N" can be read in full only in a tooltip, which keyboard and touch users cannot open; screen readers get every tag from the row's label. Phase 2's no-hover-only rule (SPEC §4.8) needs another way to see them, e.g. the full list in Card Information or the editor. This is a follow-up.
 - A pill's maximum width is counted in characters (`max-width-chars`), so a name of wide letters may be cut a little before 16 characters without a tooltip.

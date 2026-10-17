@@ -3,16 +3,23 @@
 
 use crate::widgets::tag_pills::text::spoken;
 
+/// The front as a screen reader names the card, in the row's label and its
+/// menu button's ("Actions for …"): its preview, or "empty front" when it
+/// has no text (e.g. a side that is only an empty formula).
+pub fn spoken_front(front: &str) -> &str {
+    if front.is_empty() {
+        "empty front"
+    } else {
+        front
+    }
+}
+
 /// The accessible label of a card row: the front, the back, every tag
 /// (the ones folded into "+N" too) and whether the card is suspended, so a
 /// screen reader says what the row shows: "2 + 2, back: 4, tags: maths,
 /// easy, suspended". The previews are already one plain line each.
 pub fn row_label(front: &str, back: &str, tags: &[String], suspended: bool) -> String {
-    let mut parts = vec![if front.is_empty() {
-        "empty front".to_owned()
-    } else {
-        front.to_owned()
-    }];
+    let mut parts = vec![spoken_front(front).to_owned()];
     if !back.is_empty() {
         parts.push(format!("back: {back}"));
     }

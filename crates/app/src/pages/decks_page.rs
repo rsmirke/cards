@@ -474,11 +474,16 @@ impl DecksPage {
     }
 }
 
+/// How late the first frame after a deck's push may come and still be
+/// logged as its opening time.
+const FIRST_FRAME_LOG_LIMIT: Duration = Duration::from_secs(5);
+
 /// Logs (at debug level) how long opening a deck took: building its page,
 /// and until the first frame painted after the push (issue #42: a deck of
 /// 5,000 cards must open fast). `after-paint` is emitted by the frame clock
 /// once per frame, after the frame is drawn (`GdkFrameClock` docs, "Frame
-/// phases"); the handler disconnects itself after the first one.
+/// phases"); the handler disconnects itself after the first one, and logs
+/// nothing if that frame comes more than [`FIRST_FRAME_LOG_LIMIT`] later.
 fn log_first_frame(view: &adw::NavigationView, started: Instant, built_ms: u128) {
     let Some(clock) = view.frame_clock() else {
         return;
@@ -488,11 +493,16 @@ fn log_first_frame(view: &adw::NavigationView, started: Instant, built_ms: u128)
         #[strong]
         handler,
         move |clock| {
-            tracing::debug!(
-                built_ms,
-                first_frame_ms = started.elapsed().as_millis(),
-                "deck page opened"
-            );
+            // A frame long after the push (the window was hidden, say) says
+            // nothing about opening the deck: disconnect without a log.
+            let elapsed = started.elapsed();
+            if elapsed < FIRST_FRAME_LOG_LIMIT {
+                tracing::debug!(
+                    built_ms,
+                    first_frame_ms = elapsed.as_millis(),
+                    "deck page opened"
+                );
+            }
             if let Some(id) = handler.take() {
                 clock.disconnect(id);
             }
