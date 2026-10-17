@@ -55,6 +55,8 @@ mod imp {
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
+        pub study_bar: TemplateChild<gtk::ActionBar>,
+        #[template_child]
         pub card_list: TemplateChild<gtk::ListView>,
         #[template_child]
         pub empty_add_button: TemplateChild<gtk::Button>,
@@ -116,6 +118,7 @@ mod imp {
             let page = self.obj();
             // Back from studying: what is left to study changed.
             page.connect_shown(super::DeckPage::update_study);
+            page.connect_compact_notify(super::DeckPage::update_study_bar);
             // AdwBreakpoint emits `apply` and `unapply` as its condition
             // starts and stops matching, the first time too when the page
             // is first sized (AdwBreakpoint docs; the browser page does
@@ -552,6 +555,16 @@ impl DeckPage {
         let empty = imp.cards.get().is_none_or(|s| s.n_items() == 0);
         imp.content_stack
             .set_visible_child_name(if empty { "empty" } else { "list" });
+        self.update_study_bar();
+    }
+
+    /// Reveals the bottom Study bar only on a narrow window over a deck
+    /// with cards (see [`study_bar_shown`]).
+    fn update_study_bar(&self) {
+        let imp = self.imp();
+        let empty = imp.cards.get().is_none_or(|s| s.n_items() == 0);
+        imp.study_bar
+            .set_revealed(study_bar_shown(self.compact(), empty));
     }
 
     fn item(&self, position: u32) -> Option<CardObject> {
@@ -699,6 +712,15 @@ fn undo_card_delete(
 fn study_subtitle(input: &StudyInput) -> String {
     due_new_line(input.reviews.len() + input.steps.len(), input.new.len())
         .unwrap_or_else(|| "Nothing to study".to_owned())
+}
+
+/// Whether the bottom Study bar shows: on a narrow window (`compact`, where
+/// Study leaves the header), unless the deck is empty. An empty deck shows
+/// its status page with Add Card alone; a disabled Study pill under it
+/// would only be noise. On a wide window the header's Study stays, disabled,
+/// so the header does not change shape when the first card is added.
+fn study_bar_shown(compact: bool, empty: bool) -> bool {
+    compact && !empty
 }
 
 /// The longest single wait before re-checking what there is to study. A
@@ -849,6 +871,14 @@ mod tests {
         assert_eq!(found, (Some(4_999), None));
         // About 2 ms in a debug build; the bound leaves 10 times that.
         assert!(scans < Duration::from_millis(20), "{scans:?}");
+    }
+
+    #[test]
+    fn the_study_bar_shows_only_on_a_narrow_window_with_cards() {
+        assert!(study_bar_shown(true, false));
+        assert!(!study_bar_shown(true, true));
+        assert!(!study_bar_shown(false, false));
+        assert!(!study_bar_shown(false, true));
     }
 
     #[test]

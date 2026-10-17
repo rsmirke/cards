@@ -53,7 +53,7 @@ Measured on one machine, debug build, the 5,000-card scratch deck (`fill_scratch
 
 ### Deck page subtitle and empty state
 
-The subtitle uses `ui::text::due_new_line` ("1,234 due · 20 new"), built from `due_count` / `new_count`, which the deck rows use too, so both say the counts the same way with grouped digits. The empty state already followed the brief (icon, "No Cards Yet", one sentence, a `.pill .suggested-action` **Add Card**) and is unchanged.
+The subtitle uses `ui::text::due_new_line` ("1,234 due · 20 new"), built from `due_count` / `new_count`, which the deck rows use too, so both say the counts the same way with grouped digits. The empty state already followed the brief (icon, "No Cards Yet", one sentence, a `.pill .suggested-action` **Add Card**) and is unchanged, except that on a narrow window the bottom Study bar (ADR 0040) now hides while the deck is empty (`study_bar_shown`, unit-tested), so the status page and its Add Card stand alone. On a wide window the header's Study stays, disabled, so the header keeps its shape when the first card is added.
 
 ## Consequences
 
