@@ -253,6 +253,7 @@ impl RappelWindow {
         for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
             if let Some(deck) = page.downcast_ref::<DeckPage>() {
                 deck.update_study();
+                deck.refresh_new_flags();
             }
         }
         imp.decks_page.refresh();

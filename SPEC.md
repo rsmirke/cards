@@ -136,7 +136,7 @@ Storage rules:
 
 ### 4.5 Review
 - Undo last grade (Ctrl+Z, and an Undo button in the header) via an `undoes` event, repeatable back to the session's first grade, also from the summary; not available after leaving the page. *Done (ADR 0028, 0030).*
-- Reset Progress in each card's menu on the deck page, with an Undo toast. *Done (ADR 0030, #38).*
+- Reset Progress in each card's menu on the deck page, with an Undo toast; disabled for a card that is already new, and `reset_card` refuses one. *Done (ADR 0030, #38).*
 - Daily limits from settings. New cards interleaved with reviews.
 - Card actions during review: Edit (E), Suspend, Delete (with confirmation).
 - Session summary at the end: cards reviewed, pass rate, time spent.
