@@ -180,10 +180,52 @@ pub fn highlight_announcement(name: &str, index: usize, len: usize) -> String {
     format!("{name}, suggestion {} of {len}", index + 1)
 }
 
+/// A key the tags entry treats specially while suggestions show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestKey {
+    Down,
+    Up,
+    Enter,
+    Tab,
+    Escape,
+}
+
+/// What a key does to the suggestions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    /// Move the highlight.
+    Highlight(Move),
+    /// Take suggestion `n` in place of the name being typed.
+    Accept(usize),
+    /// Close the list and keep the text.
+    Close,
+    /// Not ours: the entry (or the dialog) handles the key.
+    Pass,
+}
+
+/// The keys of the suggestions (ADR 0031). Nothing is highlighted until
+/// Down or Up is pressed. **Tab** takes the highlighted suggestion, or the
+/// first one if none is highlighted. **Enter** takes only a highlighted
+/// suggestion; otherwise it is not ours, and the typed text stays as it is.
+/// **Escape** closes the list. Without a list showing, every key is the
+/// entry's own (Tab moves the focus on).
+pub fn key_action(key: SuggestKey, showing: bool, highlighted: Option<usize>) -> KeyAction {
+    if !showing {
+        return KeyAction::Pass;
+    }
+    match key {
+        SuggestKey::Down => KeyAction::Highlight(Move::Down),
+        SuggestKey::Up => KeyAction::Highlight(Move::Up),
+        SuggestKey::Enter => highlighted.map_or(KeyAction::Pass, KeyAction::Accept),
+        SuggestKey::Tab => KeyAction::Accept(highlighted.unwrap_or(0)),
+        SuggestKey::Escape => KeyAction::Close,
+    }
+}
+
 /// What a screen reader is told when suggestions appear.
 pub fn suggestions_announcement(len: usize) -> String {
     format!(
-        "{}, use the arrow keys",
+        "{}, Tab takes the first, or use the arrow keys to choose",
         crate::ui::text::count(len, "suggestion", "suggestions")
     )
 }
@@ -368,11 +410,45 @@ mod tests {
         );
         assert_eq!(
             suggestions_announcement(1),
-            "1 suggestion, use the arrow keys"
+            "1 suggestion, Tab takes the first, or use the arrow keys to choose"
         );
         assert_eq!(
             suggestions_announcement(3),
-            "3 suggestions, use the arrow keys"
+            "3 suggestions, Tab takes the first, or use the arrow keys to choose"
         );
+    }
+
+    #[test]
+    fn tab_takes_the_first_or_the_highlighted_suggestion() {
+        use SuggestKey::Tab;
+        assert_eq!(key_action(Tab, true, None), KeyAction::Accept(0));
+        assert_eq!(key_action(Tab, true, Some(2)), KeyAction::Accept(2));
+        // No list: Tab moves the focus on.
+        assert_eq!(key_action(Tab, false, None), KeyAction::Pass);
+    }
+
+    #[test]
+    fn enter_takes_only_a_highlighted_suggestion() {
+        use SuggestKey::Enter;
+        assert_eq!(key_action(Enter, true, None), KeyAction::Pass);
+        assert_eq!(key_action(Enter, true, Some(1)), KeyAction::Accept(1));
+        assert_eq!(key_action(Enter, false, Some(1)), KeyAction::Pass);
+    }
+
+    #[test]
+    fn the_arrows_highlight_and_escape_closes() {
+        use SuggestKey::{Down, Escape, Up};
+        assert_eq!(
+            key_action(Down, true, None),
+            KeyAction::Highlight(Move::Down)
+        );
+        assert_eq!(
+            key_action(Up, true, Some(0)),
+            KeyAction::Highlight(Move::Up)
+        );
+        assert_eq!(key_action(Escape, true, Some(0)), KeyAction::Close);
+        for key in [Down, Up, Escape] {
+            assert_eq!(key_action(key, false, None), KeyAction::Pass);
+        }
     }
 }

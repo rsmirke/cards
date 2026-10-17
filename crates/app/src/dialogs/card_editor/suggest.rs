@@ -7,7 +7,8 @@
 //! keyboard focus throughout: the popover is not `autohide` (which GTK
 //! documents as the setting that makes a popover modal, grabbing the
 //! keyboard focus and closing on Esc), and its rows are not focusable. So
-//! the entry's own key controller moves the highlight, accepts and closes.
+//! the entry's own key controller moves the highlight, accepts and closes
+//! (Tab, Enter, Escape: `tags::key_action`).
 //! That controller runs in the capture phase, which GTK delivers before the
 //! bubble phase (`GtkPropagationPhase`), so Escape reaches it before the
 //! dialog's own Escape handling: with suggestions showing, Escape closes only
@@ -17,7 +18,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, glib};
 
-use super::tags::{self, Move, TagsCheck};
+use super::tags::{self, KeyAction, Move, SuggestKey, TagsCheck};
 use super::{CardEditor, TagSuggestions};
 use crate::ui::toast::show_error;
 
@@ -169,9 +170,10 @@ impl CardEditor {
             let count = names.len();
             popover.set_names(&names);
             popover.set_width_request(entry.width());
-            // The first is highlighted: Enter accepts it.
-            imp.highlighted.set(Some(0));
-            popover.highlight(Some(0));
+            // Nothing is highlighted until Down or Up: Tab takes the
+            // first, Enter keeps the typed text.
+            imp.highlighted.set(None);
+            popover.highlight(None);
             let opening = !popover.is_visible();
             imp.suggested.replace(found);
             if opening {
@@ -195,9 +197,11 @@ impl CardEditor {
         imp.highlighted.set(None);
     }
 
-    /// The tags entry's keys while suggestions show: Down / Up move the
-    /// highlight, Enter accepts it, Escape closes the list. Anything else
-    /// (and every key while no suggestion shows) is the entry's own.
+    /// The tags entry's keys while suggestions show, as `tags::key_action`
+    /// decides: Down / Up highlight, Tab takes the highlighted (else the
+    /// first) suggestion, Enter takes a highlighted one only, Escape closes
+    /// the list. Anything else (and every key while no suggestion shows) is
+    /// the entry's own.
     fn tags_key(&self, key: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
         let imp = self.imp();
         let showing = imp
@@ -213,17 +217,19 @@ impl CardEditor {
         if !showing || !plain {
             return glib::Propagation::Proceed;
         }
-        match key {
-            gdk::Key::Down | gdk::Key::KP_Down => self.move_highlight(Move::Down),
-            gdk::Key::Up | gdk::Key::KP_Up => self.move_highlight(Move::Up),
-            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => {
-                match imp.highlighted.get() {
-                    Some(index) => self.accept_suggestion(index),
-                    None => return glib::Propagation::Proceed,
-                }
-            }
-            gdk::Key::Escape => self.close_suggestions(),
+        let key = match key {
+            gdk::Key::Down | gdk::Key::KP_Down => SuggestKey::Down,
+            gdk::Key::Up | gdk::Key::KP_Up => SuggestKey::Up,
+            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => SuggestKey::Enter,
+            gdk::Key::Tab => SuggestKey::Tab,
+            gdk::Key::Escape => SuggestKey::Escape,
             _ => return glib::Propagation::Proceed,
+        };
+        match tags::key_action(key, true, imp.highlighted.get()) {
+            KeyAction::Highlight(movement) => self.move_highlight(movement),
+            KeyAction::Accept(index) => self.accept_suggestion(index),
+            KeyAction::Close => self.close_suggestions(),
+            KeyAction::Pass => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
     }
