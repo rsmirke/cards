@@ -24,6 +24,7 @@ use crate::dialogs::card_info;
 use crate::pages::{ReviewPage, StatsPage};
 use crate::state::AppState;
 use crate::ui::focus::index_after_removal;
+use crate::ui::text::due_new_line;
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
 use crate::ui::{init_once, nav};
@@ -43,9 +44,12 @@ mod imp {
     use crate::ui::debounce::Debounce;
     use crate::ui::rows;
 
-    #[derive(Debug, Default, gtk::CompositeTemplate)]
+    #[derive(Debug, Default, gtk::CompositeTemplate, glib::Properties)]
+    #[properties(wrapper_type = super::DeckPage)]
     #[template(resource = "/io/github/rsmirke/Rappel/deck_page.ui")]
     pub struct DeckPage {
+        #[template_child]
+        pub breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
         pub window_title: TemplateChild<adw::WindowTitle>,
         #[template_child]
@@ -64,6 +68,10 @@ mod imp {
         pub focus_after_edit: RefCell<Option<String>>,
         /// The pending re-check of what there is to study.
         pub study_timer: Debounce,
+        /// A narrow window (the breakpoint applies): the rows show fewer
+        /// tag pills.
+        #[property(get, set)]
+        pub compact: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -101,11 +109,27 @@ mod imp {
         }
     }
 
+    #[glib::derived_properties]
     impl ObjectImpl for DeckPage {
         fn constructed(&self) {
             self.parent_constructed();
+            let page = self.obj();
             // Back from studying: what is left to study changed.
-            self.obj().connect_shown(super::DeckPage::update_study);
+            page.connect_shown(super::DeckPage::update_study);
+            // AdwBreakpoint emits `apply` and `unapply` as its condition
+            // starts and stops matching, the first time too when the page
+            // is first sized (AdwBreakpoint docs; the browser page does
+            // the same, ADR 0036).
+            self.breakpoint.connect_apply(glib::clone!(
+                #[weak]
+                page,
+                move |_| page.set_compact(true)
+            ));
+            self.breakpoint.connect_unapply(glib::clone!(
+                #[weak]
+                page,
+                move |_| page.set_compact(false)
+            ));
         }
     }
     impl WidgetImpl for DeckPage {}
@@ -144,7 +168,7 @@ impl DeckPage {
         ));
         imp.card_list
             .set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
-        imp.card_list.set_factory(Some(&row_factory()));
+        imp.card_list.set_factory(Some(&row_factory(&page)));
         imp.card_list.connect_activate(glib::clone!(
             #[weak]
             page,
@@ -670,16 +694,11 @@ fn undo_card_delete(
     }
 }
 
-/// The deck page's subtitle: "3 due · 20 new", or "Nothing to study".
+/// The deck page's subtitle: "1,234 due · 20 new", or "Nothing to study"
+/// (the same counts as the deck list's rows, `ui::text::due_new_line`).
 fn study_subtitle(input: &StudyInput) -> String {
-    let due = input.reviews.len() + input.steps.len();
-    let new = input.new.len();
-    match (due, new) {
-        (0, 0) => "Nothing to study".to_owned(),
-        (due, 0) => format!("{due} due"),
-        (0, new) => format!("{new} new"),
-        (due, new) => format!("{due} due · {new} new"),
-    }
+    due_new_line(input.reviews.len() + input.steps.len(), input.new.len())
+        .unwrap_or_else(|| "Nothing to study".to_owned())
 }
 
 /// The longest single wait before re-checking what there is to study. A
@@ -715,13 +734,22 @@ fn insert_in_order(store: &gio::ListStore, item: &CardObject) -> u32 {
     })
 }
 
-/// Builds a [`CardRow`] per visible row and points it at its card.
-fn row_factory() -> gtk::SignalListItemFactory {
+/// Builds a [`CardRow`] per visible row, following the page's `compact`,
+/// and points it at its card.
+fn row_factory(page: &DeckPage) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
-            item.set_child(Some(&CardRow::default()));
+    let page = page.downgrade();
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let row = CardRow::default();
+        if let Some(page) = page.upgrade() {
+            page.bind_property("compact", &row, "compact")
+                .sync_create()
+                .build();
         }
+        item.set_child(Some(&row));
     });
     factory.connect_bind(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
@@ -732,7 +760,8 @@ fn row_factory() -> gtk::SignalListItemFactory {
             item.child().and_downcast::<CardRow>(),
         ) {
             row.bind(&card);
-            // Screen readers read the front and the tags, not "row".
+            // Screen readers read the front, the back and the tags, not
+            // "row" (`card_row::text::row_label`).
             item.set_accessible_label(&card.row_label());
         }
     });
@@ -833,6 +862,9 @@ mod tests {
         assert_eq!(study_subtitle(&input), "3 due · 20 new");
         input.new.clear();
         assert_eq!(study_subtitle(&input), "3 due");
+        // Digits are grouped, as in the deck list.
+        input.reviews = vec![due("r"); 1_234];
+        assert_eq!(study_subtitle(&input), "1,235 due");
     }
 
     /// A page over a deck of `n` cards that are all due.

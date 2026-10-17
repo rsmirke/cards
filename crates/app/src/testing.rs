@@ -81,6 +81,17 @@ pub fn with_gtk<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T 
     })
 }
 
+/// Like [`with_gtk`], with libadwaita started and the app's resources (the
+/// templates of its widgets) registered, for tests that build its widgets.
+pub fn with_widgets<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    with_gtk(|| {
+        adw::init().expect("libadwaita starts once GTK has");
+        gtk::gio::resources_register_include!("rappel.gresource")
+            .expect("the resources are built into the test binary");
+        f()
+    })
+}
+
 /// The stack hostile input is handled on in tests: a sixteenth of the main
 /// thread's usual 8 MiB, where the app draws cards, so a recursion that only
 /// just passes here has a wide margin in the app. A stack overflow aborts
