@@ -569,6 +569,15 @@ fn write_moving_aside(db_path: &Path, stem: &Path) -> Result<()> {
 /// not split the set: a retry moves what is left to the same name (#9).
 /// Nothing is ever overwritten.
 fn move_aside(db_path: &Path, now_ms: i64) -> Result<Option<PathBuf>> {
+    move_aside_with(db_path, now_ms, &|from, to| fs::rename(from, to))
+}
+
+/// `move_aside` with the rename injected, so a test can fail it part-way.
+fn move_aside_with(
+    db_path: &Path,
+    now_ms: i64,
+    rename: &dyn Fn(&Path, &Path) -> io::Result<()>,
+) -> Result<Option<PathBuf>> {
     let mut present = Vec::new();
     for (path, suffix) in std::iter::once((db_path.to_path_buf(), ""))
         .chain(sidecar_paths(db_path).into_iter().zip(SIDECAR_SUFFIXES))
@@ -609,7 +618,7 @@ fn move_aside(db_path: &Path, now_ms: i64) -> Result<Option<PathBuf>> {
                 "the moved-aside name is taken",
             )));
         }
-        fs::rename(&path, &target).map_err(io_err)?;
+        rename(&path, &target).map_err(io_err)?;
         // Only regular files; never follow a symlink to chmod its target.
         if fs::symlink_metadata(&target)
             .map_err(io_err)?

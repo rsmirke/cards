@@ -343,6 +343,52 @@ fn a_retry_after_a_crash_between_the_renames_keeps_the_set_together() {
     no_partial_left(&e);
 }
 
+/// #9 at the source: `move_aside` itself records the set before its first
+/// rename, so a failure after the main file leaves a marker (mode 0600) that
+/// a plain retry follows.
+#[test]
+fn move_aside_records_its_set_before_renaming_and_a_retry_finishes_it() {
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    let e = Env::new();
+    let (store, _) = e.diverged();
+    let wal_bytes = crash_with_rows_in_wal(&e, store);
+    let calls = Cell::new(0);
+
+    let err = move_aside_with(&e.db(), DAY0, &|from, to| {
+        calls.set(calls.get() + 1);
+        if calls.get() == 2 {
+            return Err(io::Error::other("injected failure"));
+        }
+        fs::rename(from, to)
+    })
+    .unwrap_err();
+
+    assert!(matches!(err, Error::Io { .. }), "{err:?}");
+    let stem = e
+        .data
+        .join(format!("{DB_FILE_NAME}.replaced-{}", utc_stamp(DAY0)));
+    let marker = moving_aside_path(&e.db());
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap().trim_end(),
+        stem.file_name().unwrap().to_str().unwrap()
+    );
+    assert_eq!(
+        fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(stem.exists(), "the main file was moved");
+    assert!(suffixed(&e.db(), "-wal").exists(), "the -wal is still here");
+
+    // A retry at another time still uses the recorded name.
+    let moved = move_aside(&e.db(), DAY0 + 10 * 86_400_000).unwrap();
+
+    assert_eq!(moved.as_deref(), Some(stem.as_path()));
+    assert_eq!(fs::read(suffixed(&stem, "-wal")).unwrap(), wal_bytes);
+    assert!(!marker.exists());
+}
+
 /// Start Fresh moves the same set.
 #[test]
 fn start_fresh_after_a_crash_between_the_renames_keeps_the_set_together() {

@@ -191,6 +191,15 @@ mod tests {
         PathBuf::from("/data/rappel-dev")
     }
 
+    #[test]
+    fn an_interrupted_restore_points_to_finish_restore() {
+        assert!(
+            RecoveryReason::InterruptedRestore
+                .description()
+                .contains("Finish Restore")
+        );
+    }
+
     fn recovery(reason: RecoveryReason) -> Problem {
         Problem::Recovery {
             reason,

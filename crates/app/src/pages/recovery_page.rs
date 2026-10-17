@@ -236,7 +236,7 @@ impl RecoveryPage {
         let Some(dir) = imp.data_dir.borrow().clone() else {
             return;
         };
-        imp.backup_list.set_sensitive(false);
+        self.set_busy();
         button.set_child(Some(&adw::Spinner::new()));
 
         // The app is held while it runs, so closing the window mid-restore
@@ -279,6 +279,16 @@ impl RecoveryPage {
 }
 
 impl RecoveryPage {
+    /// Turns off every action while a job runs. Restore, Finish Restore and
+    /// Start Fresh work on the same files, so two must never run at once.
+    /// `reload` turns them back on.
+    fn set_busy(&self) {
+        let imp = self.imp();
+        imp.backup_list.set_sensitive(false);
+        imp.finish_restore_button.set_sensitive(false);
+        imp.start_fresh_button.set_sensitive(false);
+    }
+
     /// Installs the waiting copy on a worker thread, like a restore, and
     /// logs as `restore` does.
     async fn finish_restore(&self) {
@@ -286,8 +296,7 @@ impl RecoveryPage {
         let Some(dir) = imp.data_dir.borrow().clone() else {
             return;
         };
-        imp.finish_restore_button.set_sensitive(false);
-        imp.backup_list.set_sensitive(false);
+        self.set_busy();
 
         let worker_dir = dir.clone();
         let result =
@@ -336,7 +345,7 @@ impl RecoveryPage {
         let Some(dir) = imp.data_dir.borrow().clone() else {
             return;
         };
-        imp.start_fresh_button.set_sensitive(false);
+        self.set_busy();
 
         // The app is held while it runs, as for a restore.
         let worker_dir = dir.clone();
