@@ -58,6 +58,23 @@ fn deck_reads_are_fast_at_five_thousand_cards() {
         (decks[0].new_count, decks[0].due_count),
         (20, u32::try_from(DUE).unwrap())
     );
+    // The rest of the row's summary, read in the same transaction.
+    assert_eq!(
+        (
+            decks[0].card_count,
+            decks[0].suspended_count,
+            decks[0].held_back_count
+        ),
+        (
+            u32::try_from(CARDS).unwrap(),
+            0,
+            u32::try_from(CARDS - DUE).unwrap() - 20
+        )
+    );
+    assert_eq!(
+        decks[0].next_change_at,
+        store.next_study_change(&deck, NOW).unwrap()
+    );
     let (input, study) = fastest("study_input", 3, || {
         store.study_input(&deck, NOW, day_start).unwrap()
     });
@@ -276,7 +293,9 @@ fn rebuilding_the_search_index_of_five_thousand_cards_is_fast() {
 }
 
 /// `study_input` + `next_study_change` (measured 14 ms), and `list_decks`
-/// (12 ms), each.
+/// (12 ms; then about 10 ms more with the card counts and the next change
+/// the deck list shows, ADR 0041, measured 51 ms on a loaded machine where
+/// `study_input` took 41 ms), each.
 const STUDY_MS: u64 = 150;
 /// `list_cards` of 5,000 cards (measured 6 ms).
 const LIST_CARDS_MS: u64 = 100;

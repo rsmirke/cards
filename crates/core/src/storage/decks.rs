@@ -3,10 +3,10 @@
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 
-use super::review::study_input_in;
+use super::review::{next_study_change_in, study_input_in};
 use super::{Store, observe_max_id};
 use crate::domain::{
-    Deck, DeckSummary, MAX_DECK_NAME_BYTES, deck_name_fits, deck_name_key, has_nul,
+    Deck, DeckSummary, MAX_DECK_NAME_BYTES, Phase, deck_name_fits, deck_name_key, has_nul,
 };
 use crate::error::{Error, Result};
 use crate::time::now_ms;
@@ -85,6 +85,9 @@ impl Store {
     /// counts are the lengths of [`Store::study_input`] for the study day
     /// that began at `day_start`: due reviews and step cards (those due
     /// within 20 minutes included), and the new cards still allowed today.
+    /// Each summary also has the deck's card and suspended counts, the
+    /// cards the daily limits hold back, and the next study change
+    /// ([`Store::next_study_change`]), read in the same transaction.
     ///
     /// # Errors
     /// SQLite errors.
@@ -95,10 +98,21 @@ impl Store {
         for deck in decks {
             // The deck page's own rules (ADR 0014), so both always agree.
             let input = study_input_in(&tx, &deck.id, now, day_start)?;
+            let cards = card_counts(&tx, &deck.id, now)?;
+            let next_change_at = next_study_change_in(&tx, &deck.id, now)?;
+            let new_count = count_of(input.new.len());
+            let reviews = count_of(input.reviews.len());
             summaries.push(DeckSummary {
                 deck,
-                new_count: count_of(input.new.len()),
+                new_count,
                 due_count: count_of(input.reviews.len() + input.steps.len()),
+                card_count: cards.live,
+                suspended_count: cards.suspended,
+                held_back_count: cards
+                    .new
+                    .saturating_sub(new_count)
+                    .saturating_add(cards.due_reviews.saturating_sub(reviews)),
+                next_change_at,
             });
         }
         // Read only: ending it commits nothing.
@@ -271,6 +285,49 @@ pub(super) fn ensure_live_deck(conn: &Connection, id: &str) -> Result<()> {
     )
     .optional()?
     .ok_or_else(|| Error::DeckNotFound(id.to_owned()))
+}
+
+/// A deck's live cards, counted in one pass for [`Store::list_decks`].
+struct CardCounts {
+    /// Every live card.
+    live: u32,
+    /// Live suspended cards.
+    suspended: u32,
+    /// Live cards never reviewed (no schedule) and not suspended.
+    new: u32,
+    /// Live cards in review, due at `now` and not suspended, whatever the
+    /// daily limit.
+    due_reviews: u32,
+}
+
+fn card_counts(conn: &Connection, deck_id: &str, now: i64) -> Result<CardCounts> {
+    // Phases are our own constant strings, never user input. `sum` of no
+    // rows is NULL, hence the `coalesce`.
+    let (live, suspended, new, due_reviews) = conn.query_row(
+        &format!(
+            "SELECT count(*),
+                    coalesce(sum(c.suspended <> 0), 0),
+                    coalesce(sum(c.suspended = 0 AND s.card_id IS NULL), 0),
+                    coalesce(sum(c.suspended = 0 AND s.phase = '{review}'
+                                 AND s.due_at <= ?2), 0)
+             FROM cards c LEFT JOIN card_schedule s ON s.card_id = c.id
+             WHERE c.deck_id = ?1 AND c.deleted_at IS NULL",
+            review = Phase::Review.as_str()
+        ),
+        params![deck_id, now],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    Ok(CardCounts {
+        live: count_from_sql(live),
+        suspended: count_from_sql(suspended),
+        new: count_from_sql(new),
+        due_reviews: count_from_sql(due_reviews),
+    })
+}
+
+/// A count read from SQL as a [`DeckSummary`] count.
+fn count_from_sql(n: i64) -> u32 {
+    u32::try_from(n.max(0)).unwrap_or(u32::MAX)
 }
 
 /// A count for [`DeckSummary`]; no deck holds more than `u32::MAX` cards.

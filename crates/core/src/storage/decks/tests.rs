@@ -45,7 +45,11 @@ fn create_trims_the_name_and_lists_the_deck() {
         [DeckSummary {
             deck,
             new_count: 0,
-            due_count: 0
+            due_count: 0,
+            card_count: 0,
+            suspended_count: 0,
+            held_back_count: 0,
+            next_change_at: None,
         }]
     );
 }
@@ -617,5 +621,134 @@ mod study_counts {
         );
         // The next study day: 10 unreviewed cards left, all allowed.
         assert_eq!(new_count(&store, T0 + DAY_MS, DAY_START + DAY_MS), 10);
+    }
+
+    // --- What the deck list says when there is nothing to study now -----
+
+    /// `(card_count, suspended_count, held_back_count, next_change_at)` of
+    /// the only deck.
+    fn extra(store: &Store, now: i64, day_start: i64) -> (u32, u32, u32, Option<i64>) {
+        let d = store.list_decks(now, day_start).unwrap().remove(0);
+        (
+            d.card_count,
+            d.suspended_count,
+            d.held_back_count,
+            d.next_change_at,
+        )
+    }
+
+    /// Every deck's `next_change_at` equals `next_study_change`.
+    fn assert_next_matches(store: &Store, now: i64) {
+        for d in store.list_decks(now, DAY_START).unwrap() {
+            assert_eq!(
+                d.next_change_at,
+                store.next_study_change(&d.deck.id, now).unwrap(),
+                "deck {}",
+                d.deck.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_deck_without_cards_has_nothing_counted_and_no_next_change() {
+        let mut store = Store::in_memory();
+        deck_with_cards(&mut store, "Empty", 0);
+        assert_eq!(extra(&store, T0, DAY_START), (0, 0, 0, None));
+    }
+
+    #[test]
+    fn new_cards_have_no_next_change_and_suspended_ones_are_counted() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 3);
+        assert_eq!(extra(&store, T0, DAY_START), (3, 0, 0, None));
+        store.set_suspended(&cards[..1], true).unwrap();
+        assert_eq!(extra(&store, T0, DAY_START), (3, 1, 0, None));
+        // Every card suspended, one of them reviewed: no change to come.
+        answer(&mut store, &cards[1], Grade::Pass, T0);
+        store.set_suspended(&cards, true).unwrap();
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!((d.new_count, d.due_count), (0, 0));
+        assert_eq!(extra(&store, T0, DAY_START), (3, 3, 0, None));
+        assert_next_matches(&store, T0);
+    }
+
+    #[test]
+    fn deleted_cards_are_not_counted() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 3);
+        store.set_suspended(&cards[..1], true).unwrap();
+        store.delete_card_at(&cards[0], T0).unwrap();
+        store.delete_card_at(&cards[1], T0).unwrap();
+        assert_eq!(extra(&store, T0, DAY_START), (1, 0, 0, None));
+    }
+
+    #[test]
+    fn a_step_card_changes_twenty_minutes_before_it_is_due() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 1);
+        // Failed at T0: due again in the 10-minute step, so offered at once.
+        answer(&mut store, &cards[0], Grade::Fail, T0);
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!((d.due_count, d.next_change_at), (1, None));
+        assert_next_matches(&store, T0);
+    }
+
+    #[test]
+    fn a_learned_card_changes_when_it_is_due_and_not_before() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 1);
+        answer(&mut store, &cards[0], Grade::Pass, T0);
+        answer(&mut store, &cards[0], Grade::Pass, T0 + 600_000);
+        let due = store.next_study_change(&cards_deck(&store), T0 + 600_000);
+        let due = due.unwrap().expect("a reviewed card becomes due");
+        assert!(due > T0 + 600_000);
+        assert_eq!(extra(&store, T0 + 600_000, DAY_START), (1, 0, 0, Some(due)));
+        // One millisecond before: still the next change. At the due time it
+        // is studied now, so there is no later change.
+        assert_eq!(extra(&store, due - 1, DAY_START).3, Some(due));
+        let at_due = store.list_decks(due, due).unwrap().remove(0);
+        assert_eq!((at_due.due_count, at_due.next_change_at), (1, None));
+        for now in [T0, T0 + 600_000, due - 1, due, due + DAY_MS] {
+            assert_next_matches(&store, now);
+        }
+    }
+
+    fn cards_deck(store: &Store) -> String {
+        store.decks().unwrap().remove(0).id
+    }
+
+    #[test]
+    fn the_daily_limits_hold_cards_back() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 30);
+        // 20 new allowed today, 10 held back.
+        assert_eq!(extra(&store, T0, DAY_START).2, 10);
+        for card in &cards[..NEW_PER_DAY as usize] {
+            answer(&mut store, card, Grade::Pass, T0);
+        }
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!((d.new_count, d.held_back_count), (0, 10));
+        // The next day the ten are allowed; nothing is held back.
+        let tomorrow = store
+            .list_decks(T0 + DAY_MS, DAY_START + DAY_MS)
+            .unwrap()
+            .remove(0);
+        assert_eq!((tomorrow.new_count, tomorrow.held_back_count), (10, 0));
+
+        // A review limit of 2 with 3 cards due holds one back.
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Physics", 3);
+        for card in &cards {
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS);
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS + 600_000);
+        }
+        store.set_max_reviews_per_day(2).unwrap();
+        let later = T0 + 400 * DAY_MS;
+        let d = store.list_decks(later, later).unwrap().remove(0);
+        assert_eq!((d.due_count, d.held_back_count), (2, 1));
+        store.set_max_reviews_per_day(0).unwrap();
+        let d = store.list_decks(later, later).unwrap().remove(0);
+        assert_eq!((d.due_count, d.held_back_count), (0, 3));
+        assert_next_matches(&store, later);
     }
 }

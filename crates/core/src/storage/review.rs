@@ -143,23 +143,34 @@ impl Store {
     pub fn next_study_change(&self, deck_id: &str, now: i64) -> Result<Option<i64>> {
         let tx = self.conn.unchecked_transaction()?;
         ensure_live_deck(&tx, deck_id)?;
-        // Phases are our own constant strings, never user input.
-        let next = tx.query_row(
-            &format!(
-                "SELECT min(CASE WHEN s.phase = '{review}' THEN s.due_at
-                                 ELSE s.due_at - ?3 END)
-                 FROM cards c JOIN card_schedule s ON s.card_id = c.id
-                 WHERE c.deck_id = ?1 AND c.deleted_at IS NULL AND c.suspended = 0
-                   AND (CASE WHEN s.phase = '{review}' THEN s.due_at
-                             ELSE s.due_at - ?3 END) > ?2",
-                review = Phase::Review.as_str()
-            ),
-            params![deck_id, now, EARLY_MS],
-            |r| r.get(0),
-        )?;
+        let next = next_study_change_in(&tx, deck_id, now)?;
         tx.finish()?;
         Ok(next)
     }
+}
+
+/// [`Store::next_study_change`] on a connection inside a read transaction,
+/// for a deck already known to be live; shared with
+/// [`Store::list_decks`].
+pub(super) fn next_study_change_in(
+    conn: &Connection,
+    deck_id: &str,
+    now: i64,
+) -> Result<Option<i64>> {
+    // Phases are our own constant strings, never user input.
+    Ok(conn.query_row(
+        &format!(
+            "SELECT min(CASE WHEN s.phase = '{review}' THEN s.due_at
+                             ELSE s.due_at - ?3 END)
+             FROM cards c JOIN card_schedule s ON s.card_id = c.id
+             WHERE c.deck_id = ?1 AND c.deleted_at IS NULL AND c.suspended = 0
+               AND (CASE WHEN s.phase = '{review}' THEN s.due_at
+                         ELSE s.due_at - ?3 END) > ?2",
+            review = Phase::Review.as_str()
+        ),
+        params![deck_id, now, EARLY_MS],
+        |r| r.get(0),
+    )?)
 }
 
 /// [`Store::reset_card`] inside the caller's transaction.
