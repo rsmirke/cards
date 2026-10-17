@@ -209,20 +209,35 @@ fn next_entry_time(tx: &Connection, ids: &mut IdGen, card_id: &str, now: i64) ->
     Ok(last_at.map_or(now, |last| now.max(last)))
 }
 
-/// The common table `counted(card_id, reviewed_at)`: the reviews of deck
-/// `?1`'s cards (deleted ones included) that the daily limits count. Those
-/// are the reviews no undo cancels, made after the card's last reset that
-/// no undo cancels (ADR 0028): an undone review gives its place in today's
-/// budget back, and a reset card is new again, as its rebuilt state is.
-const COUNTED_REVIEWS: &str = "counted(card_id, reviewed_at) AS (
-    SELECT e.card_id, e.reviewed_at FROM review_events e JOIN cards c ON c.id = e.card_id
-    WHERE c.deck_id = ?1 AND e.kind = 'review'
+/// The condition on a `review_events` row `e` that makes it a counted
+/// review: a review no undo cancels, made after the card's last reset that
+/// no undo cancels (ADR 0028). The daily limits and the statistics (ADR
+/// 0032) share it, so one rule decides what counts.
+macro_rules! counted_event {
+    () => {
+        "e.kind = 'review'
       AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = e.id)
       AND NOT EXISTS (
           SELECT 1 FROM review_events r
           WHERE r.card_id = e.card_id AND r.kind = 'reset'
             AND (r.reviewed_at, r.id) > (e.reviewed_at, e.id)
-            AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = r.id)))";
+            AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = r.id))"
+    };
+}
+pub(super) use counted_event;
+
+/// The common table `counted(card_id, reviewed_at)`: the reviews of deck
+/// `?1`'s cards (deleted ones included) that the daily limits count. Those
+/// are the reviews no undo cancels, made after the card's last reset that
+/// no undo cancels (ADR 0028): an undone review gives its place in today's
+/// budget back, and a reset card is new again, as its rebuilt state is.
+const COUNTED_REVIEWS: &str = concat!(
+    "counted(card_id, reviewed_at) AS (
+    SELECT e.card_id, e.reviewed_at FROM review_events e JOIN cards c ON c.id = e.card_id
+    WHERE c.deck_id = ?1 AND ",
+    counted_event!(),
+    ")"
+);
 
 /// [`Store::study_input`] on `conn`, for callers that already hold a read
 /// transaction. [`Store::list_decks`] counts with it too, so the deck list
