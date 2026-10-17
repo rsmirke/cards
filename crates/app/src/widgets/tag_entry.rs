@@ -255,6 +255,21 @@ impl TagEntry {
         }
     }
 
+    /// Types `keys` one character at a time at the cursor, running the
+    /// split each one queues, as the idle would before the next key.
+    #[cfg(test)]
+    pub fn type_keys(&self, keys: &str) {
+        let field = self.text();
+        for key in keys.chars() {
+            let mut position = field.position();
+            field.insert_text(&key.to_string(), &mut position);
+            field.set_position(position);
+            if self.imp().split_queued.replace(false) {
+                self.split(false);
+            }
+        }
+    }
+
     /// The text widget the names are typed in.
     #[expect(
         clippy::expect_used,
@@ -343,23 +358,32 @@ impl TagEntry {
         ));
         text.add_controller(keys);
 
-        // Tab or a click elsewhere: the suggestions go with the focus, and
-        // the name typed becomes a pill, so what the field shows is what a
-        // save writes. `leave` also comes when only the window stops being
-        // active: GtkEventControllerFocus handles GTK_CROSSING_ACTIVE as well
-        // as GTK_CROSSING_FOCUS (`gtk_event_controller_focus_handle_crossing`,
-        // gtk/gtkeventcontrollerfocus.c, GTK 4.20). And the text's own
-        // popovers (context menu, emoji chooser) are parented to it, so the
-        // focus can move into them. So the name is made a pill only once the
-        // focus has settled, in an idle, if the window is still active and
-        // the focus is outside this field: a Paste from the context menu
-        // must still go into the name being typed.
-        let focus = gtk::EventControllerFocus::new();
-        focus.connect_leave(glib::clone!(
+        // Tab or a click elsewhere: the suggestions go with the focus.
+        let text_focus = gtk::EventControllerFocus::new();
+        text_focus.connect_leave(glib::clone!(
+            #[weak(rename_to = entry)]
+            self,
+            move |_| entry.close_suggestions()
+        ));
+        text.add_controller(text_focus);
+
+        // The focus leaving the whole field (from the text or a pill) makes
+        // the typed name a pill, so what the field shows is what a save
+        // writes. The controller is on the field, and GTK emits `leave` only
+        // when the focus leaves the hierarchy rooted at its widget (the
+        // `leave` docs, gtk/gtkeventcontrollerfocus.c), so moving between
+        // the text, the pills and the text's own popovers (context menu,
+        // emoji chooser, parented to it) does not count. `leave` also comes
+        // when only the window stops being active: the controller handles
+        // GTK_CROSSING_ACTIVE as well as GTK_CROSSING_FOCUS
+        // (`gtk_event_controller_focus_handle_crossing`, GTK 4.20). So the
+        // decision waits for the focus to settle, in an idle, and is
+        // `keys::should_split`.
+        let field_focus = gtk::EventControllerFocus::new();
+        field_focus.connect_leave(glib::clone!(
             #[weak(rename_to = entry)]
             self,
             move |_| {
-                entry.close_suggestions();
                 glib::idle_add_local_once(glib::clone!(
                     #[weak]
                     entry,
@@ -367,7 +391,7 @@ impl TagEntry {
                 ));
             }
         ));
-        text.add_controller(focus);
+        self.add_controller(field_focus);
 
         // A click on the frame around the pills is a click in the field.
         let click = gtk::GestureClick::new();
@@ -394,12 +418,19 @@ impl TagEntry {
         let Some(window) = self.root().and_downcast::<gtk::Window>() else {
             return;
         };
-        if !window.is_active() || self.has_focus_inside(gtk::prelude::GtkWindowExt::focus(&window))
-        {
-            return;
+        self.after_leave(
+            window.is_active(),
+            gtk::prelude::GtkWindowExt::focus(&window),
+        );
+    }
+
+    /// Makes the typed name a pill if `keys::should_split` says so, for a
+    /// window that is `active` or not and the widget with the `focus`.
+    fn after_leave(&self, active: bool, focus: Option<gtk::Widget>) {
+        if keys::should_split(active, self.has_focus_inside(focus)) {
+            self.imp().split_queued.set(false);
+            self.split(true);
         }
-        self.imp().split_queued.set(false);
-        self.split(true);
     }
 
     /// Whether `focus` is in this field (the text, a pill, a popover of
@@ -424,7 +455,11 @@ impl TagEntry {
             return;
         }
         imp.edited.set(true);
-        if text.text().contains(',') && !imp.split_queued.replace(true) {
+        let typed = text.text();
+        // A comma, or spaces before the name (after a comma, or typed into
+        // the empty text), which are not part of it.
+        let tidy = typed.contains(',') || typed.starts_with(char::is_whitespace);
+        if tidy && !imp.split_queued.replace(true) {
             // Not in this handler: GtkText is still inserting the text
             // that emitted it. Run before the next frame is drawn, so the
             // comma is never seen: GDK redraws at GDK_PRIORITY_REDRAW,
@@ -835,40 +870,45 @@ mod tests {
             let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
             column.append(&entry);
             column.append(&other);
-            let window = gtk::Window::builder().child(&column).build();
-            window.present();
-            let context = glib::MainContext::default();
-            let settle = || {
-                for _ in 0..50 {
-                    while context.iteration(false) {}
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-            };
-            settle();
-            // Into a pill's remove button: still inside, nothing changes.
+            // The field watches the focus itself, not only its text, so
+            // text → pill → elsewhere is one leave.
+            let watches = entry
+                .observe_controllers()
+                .into_iter()
+                .filter_map(Result::ok)
+                .any(|c| c.is::<gtk::EventControllerFocus>());
+            assert!(watches);
             entry.set_tags(&strings(&["a"]));
-            entry.text().grab_focus();
             entry.type_text("geo");
-            entry.imp().pills.focus_remove_button(0);
-            settle();
+            let pill_button = entry.imp().pills.remove_buttons()[0].clone();
+            // The focus on a pill, or in the text: still inside.
+            entry.after_leave(true, Some(pill_button.upcast()));
+            entry.after_leave(true, Some(entry.text().upcast()));
             assert_eq!(entry.pill_names(), ["a"]);
             assert_eq!(entry.typed(), "geo");
-            // Elsewhere in an active window: a pill. (Without a window
-            // manager the window may never be active; then the name stays,
-            // as it would while the window is in the background.)
-            entry.text().grab_focus();
-            settle();
-            other.grab_focus();
-            settle();
-            if window.is_active() {
-                assert_eq!(entry.pill_names(), ["a", "geo"]);
-                assert_eq!(entry.typed(), "");
-            } else {
-                assert_eq!(entry.pill_names(), ["a"]);
-                assert_eq!(entry.typed(), "geo");
-            }
-            eprintln!("window active: {}", window.is_active());
-            window.destroy();
+            // The window went to the background: the name stays.
+            entry.after_leave(false, Some(other.clone().upcast()));
+            assert_eq!(entry.typed(), "geo");
+            // Elsewhere in an active window: a pill.
+            entry.after_leave(true, Some(other.upcast()));
+            assert_eq!(entry.pill_names(), ["a", "geo"]);
+            assert_eq!(entry.typed(), "");
+        });
+    }
+
+    #[test]
+    fn spaces_typed_before_a_name_are_dropped() {
+        crate::testing::with_widgets(|| {
+            let entry = TagEntry::default();
+            // Key by key, the split running between keys as the idle does.
+            entry.type_keys("algebra, geo");
+            assert_eq!(entry.pill_names(), ["algebra"]);
+            assert_eq!(entry.typed(), "geo");
+            entry.type_keys(" ");
+            assert_eq!(entry.typed(), "geo ");
+            entry.set_tags(&[]);
+            entry.type_keys("  maths");
+            assert_eq!(entry.typed(), "maths");
         });
     }
 }

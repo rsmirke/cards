@@ -1065,18 +1065,9 @@ mod tests {
         });
     }
 
-    /// Runs the main loop until `done` or two seconds have passed.
-    fn settle_until(done: impl Fn() -> bool) {
-        let context = glib::MainContext::default();
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !done() && std::time::Instant::now() < end {
-            while context.iteration(false) {}
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    }
-
     #[test]
     fn switching_panes_keeps_the_focus_where_keys_reach() {
+        use std::time::Duration;
         crate::testing::with_gtk(|| {
             let (_tmp, _state, _deck, editor, _saved) = editor_over(None);
             let imp = editor.imp();
@@ -1087,8 +1078,10 @@ mod tests {
                 .build();
             window.present();
             editor.present(Some(&window));
-            settle_until(|| imp.front_view.is_mapped());
-            assert!(imp.front_view.is_mapped(), "the editor did not show");
+            assert!(
+                crate::testing::settle_until(|| imp.front_view.is_mapped(), Duration::from_secs(5)),
+                "the editor did not show"
+            );
             editor.set_focus(Some(&*imp.front_view));
             let toggle_focused = || {
                 editor
@@ -1100,7 +1093,10 @@ mod tests {
             // bar, then `apply` sets narrow.
             imp.mode_bar.set_visible(true);
             editor.set_narrow(true);
-            settle_until(|| imp.mode_toggles.is_mapped());
+            assert!(crate::testing::settle_until(
+                || imp.mode_toggles.is_mapped(),
+                Duration::from_secs(5)
+            ));
             assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
             // To the preview with the focus in the text: on the toggle.
             imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));

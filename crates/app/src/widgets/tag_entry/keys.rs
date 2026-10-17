@@ -125,6 +125,14 @@ pub fn tab_stop(current: Option<usize>, len: usize, forward: bool) -> Option<usi
     }
 }
 
+/// Whether the typed name becomes a pill once the focus has left the
+/// field: only if the window is still `active` (not just sent to the
+/// background) and the focus is not `inside` the field after all (the
+/// text, a pill, one of the text's popovers).
+pub fn should_split(active: bool, inside: bool) -> bool {
+    active && !inside
+}
+
 /// What a screen reader is told when the highlight lands on `name`.
 pub fn highlight_announcement(name: &str, index: usize, len: usize) -> String {
     format!("{name}, suggestion {} of {len}", index + 1)
@@ -278,6 +286,14 @@ mod tests {
         assert_eq!(tab_stop(Some(1), 3, false), Some(0));
         assert_eq!(tab_stop(Some(0), 3, false), None);
         assert_eq!(tab_stop(None, 0, true), None);
+    }
+
+    #[test]
+    fn the_name_becomes_a_pill_only_when_the_focus_really_left() {
+        assert!(should_split(true, false));
+        assert!(!should_split(true, true));
+        assert!(!should_split(false, false));
+        assert!(!should_split(false, true));
     }
 
     #[test]
