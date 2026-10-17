@@ -92,17 +92,10 @@ pub enum Conflict {
     CardDiffers(String),
     /// The database has a review event with this id but different content.
     EventDiffers(String),
-    /// The database has a tag with this id but another name.
+    /// The database has a tag with this id but another name. (A tag with
+    /// another id but the same name is not a conflict: it is mapped onto
+    /// the database's tag, ADR 0029.)
     TagDiffers(String),
-    /// A tag in the file has the name (by
-    /// [`name_key`](crate::domain::name_key)) of another tag in the
-    /// database.
-    TagNameTaken {
-        /// The tag in the file.
-        tag_id: String,
-        /// The database's tag with that name.
-        existing_id: String,
-    },
     /// An undo in the file cancels an entry that another undo in the
     /// database already cancels (ADR 0028).
     AlreadyUndone {
@@ -138,13 +131,6 @@ impl fmt::Display for Conflict {
                 "deck {deck_id} has the same name as deck {existing_id} in the database"
             ),
             Self::TagDiffers(id) => write!(f, "tag {id} differs from the one in the database"),
-            Self::TagNameTaken {
-                tag_id,
-                existing_id,
-            } => write!(
-                f,
-                "tag {tag_id} has the same name as tag {existing_id} in the database"
-            ),
             Self::AlreadyUndone {
                 event_id,
                 existing_id,
@@ -163,7 +149,8 @@ pub struct ImportSummary {
     pub decks: TableCounts,
     /// Cards, deleted ones included.
     pub cards: TableCounts,
-    /// Tags.
+    /// Tags. A tag of the file with the name of a database tag (another
+    /// id) is mapped onto it and counted as present.
     pub tags: TableCounts,
     /// Card tags (a card having a tag).
     pub card_tags: TableCounts,

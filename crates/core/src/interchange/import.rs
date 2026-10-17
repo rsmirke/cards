@@ -1,7 +1,7 @@
 //! Importing a `.rappel` file: plan (check and compare, no writes), then
 //! apply (back up, then one transaction).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -31,9 +31,9 @@ impl Store {
     /// would be added, those that would be brought back (deleted here,
     /// live in the file, otherwise the same) and those already present,
     /// and lists every conflict (a row with the same id but different
-    /// content, a live deck name already used by another live deck, a tag
-    /// name already used by another tag, or an undo of an entry the
-    /// database has already undone). It also says whether the file's
+    /// content, a live deck name already used by another live deck, or an
+    /// undo of an entry the database has already undone). A tag with the
+    /// name of a database tag is mapped onto it, not a conflict. It also says whether the file's
     /// settings would be applied: only into a database without decks.
     /// Pass the plan to [`Self::apply_import`].
     ///
@@ -212,8 +212,9 @@ fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 /// How a document compares with the database: the summary, the positions
-/// of the rows to add and to bring back, and the ids of the cards that
-/// come back with a revived deck but are not in the file.
+/// of the rows to add and to bring back, the ids of the cards that come
+/// back with a revived deck but are not in the file, and the file's tags
+/// that are mapped onto a database tag of the same name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Classified {
     pub(super) summary: ImportSummary,
@@ -225,6 +226,17 @@ pub(super) struct Classified {
     revived_decks: Vec<usize>,
     revived_cards: Vec<usize>,
     batch_cards: Vec<String>,
+    /// File tag id → the database's tag id with the same name key.
+    mapped_tags: BTreeMap<String, String>,
+}
+
+impl Classified {
+    /// The database tag id a file tag id stands for.
+    fn tag_id<'a>(&'a self, file_id: &'a str) -> &'a str {
+        self.mapped_tags
+            .get(file_id)
+            .map_or(file_id, String::as_str)
+    }
 }
 
 /// What to do with a deck or card of the file whose id is in the database.
@@ -281,9 +293,11 @@ fn classify(conn: &Connection, doc: &Document) -> Result<Classified> {
 }
 
 /// A tag with the same id is present if it has the same name, else a
-/// conflict. A new tag whose name key another tag of the database has is
-/// a conflict: tags are never deleted, so that tag is the same name with
-/// another id.
+/// conflict. A tag whose id is not here but whose name key a database tag
+/// has is that tag (two machines that each created "maths"): it is mapped
+/// onto the database's id, counted as present, and the file's card tags
+/// that name it attach to the database's tag. The database keeps its
+/// own spelling. Else the tag is new.
 fn classify_tags(conn: &Connection, doc: &Document, rows: &mut Classified) -> Result<()> {
     let mut by_id = conn.prepare("SELECT name FROM tags WHERE id = ?1")?;
     let mut by_key = conn.prepare("SELECT id FROM tags WHERE name_key = ?1")?;
@@ -300,10 +314,8 @@ fn classify_tags(conn: &Connection, doc: &Document, rows: &mut Classified) -> Re
                     .query_row([name_key(&t.name)], |r| r.get(0))
                     .optional()?;
                 if let Some(existing_id) = existing {
-                    rows.summary.conflicts.push(Conflict::TagNameTaken {
-                        tag_id: t.id.clone(),
-                        existing_id,
-                    });
+                    rows.summary.tags.present += 1;
+                    rows.mapped_tags.insert(t.id.clone(), existing_id);
                 } else {
                     rows.summary.tags.new += 1;
                     rows.new_tags.push(i);
@@ -314,11 +326,12 @@ fn classify_tags(conn: &Connection, doc: &Document, rows: &mut Classified) -> Re
     Ok(())
 }
 
-/// A card tag is present or new; it has no content to differ.
+/// A card tag is present or new, once its tag is mapped
+/// ([`classify_tags`]); it has no content to differ.
 fn classify_card_tags(conn: &Connection, doc: &Document, rows: &mut Classified) -> Result<()> {
     let mut stmt = conn.prepare("SELECT 1 FROM card_tags WHERE card_id = ?1 AND tag_id = ?2")?;
     for (i, ct) in doc.card_tags.iter().enumerate() {
-        if stmt.exists(params![ct.card_id, ct.tag_id])? {
+        if stmt.exists(params![ct.card_id, rows.tag_id(&ct.tag_id)])? {
             rows.summary.card_tags.present += 1;
         } else {
             rows.summary.card_tags.new += 1;
@@ -598,7 +611,7 @@ fn insert_rows<'d>(
     }
     let mut card_tag = conn.prepare("INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2)")?;
     for ct in rows.new_card_tags.iter().map(|&i| &doc.card_tags[i]) {
-        card_tag.execute(params![ct.card_id, ct.tag_id])?;
+        card_tag.execute(params![ct.card_id, rows.tag_id(&ct.tag_id)])?;
     }
     // In file order, which is by id: an undo's target (smaller id, checked
     // by validation) is inserted before it, or is already here.

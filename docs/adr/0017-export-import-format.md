@@ -9,6 +9,7 @@
 - Amended: 2026-10-16, a row deleted on both sides is already present, whatever the stamps; a NUL in a name or card side refuses the file
 - Amended by: ADR 0018 (limits enforced when writing), ADR 0020 (export extension), ADR 0026 (which backups an import can push out)
 - Amended: 2026-10-17, format version 2: tags, card tags, log entry kinds (ADR 0028, 0029) and the settings (ADR 0027); version 1 is no longer read
+- Amended: 2026-10-17, a tag with the name of a database tag is mapped onto it instead of being a conflict
 
 ## Context
 
@@ -47,7 +48,8 @@ So the same database exported at the same time gives identical bytes; only `expo
 - A revived deck also revives the database's cards in that deck that share its `deleted_at` stamp (the batch deleted with it, exactly as `undelete_deck` does, ADR 0012) and that are not in the file. Cards that are in the file are decided by their own row: live in the file, they are revived; deleted in the file, they stay deleted.
 - A log entry with the same id and the same content is present; any difference is a conflict. A new undo of an entry that the database has already undone with another undo is a conflict (`AlreadyUndone`): an entry is undone once (ADR 0028).
 - A live deck in the file (new, present or revived) whose name key is used by another live deck in the database is a conflict too.
-- A tag with the same id and the same name is present; another name is a conflict (`TagDiffers`). A new tag whose name key another tag of the database has is a conflict (`TagNameTaken`): tags are never deleted, so that is the same name with another id (ADR 0029).
+- A tag with the same id and the same name is present; another name is a conflict (`TagDiffers`).
+- A tag whose id is not in the database but whose name key a database tag has is **mapped** onto that tag: it is counted as present and not inserted, and the file's card tags that name it attach to the database's tag id. The database keeps its own spelling ("maths" stays "maths" when the file says "Maths"). This is the one place an import remaps an id, and it is safe where the general case is not: a tag has no content but its name, its id is referenced only by `card_tags`, and the mapping is recomputed from the names on every plan. So importing the same file again maps it the same way and changes nothing. Two machines that each created "maths" therefore merge cleanly (ADR 0029).
 - A card tag (a card having a tag) is present or new; it has nothing that could differ.
 - **Settings** are applied only into a database that has no decks at all, deleted ones included: moving to a new machine brings them, a merge never changes them. A merge must not change the retention behind the user's back, since that would reschedule every card. Applied, the file's settings replace the stored ones (keys it does not have go back to their defaults; a file with an empty `settings` brings all the defaults) before the schedules are rebuilt, so imported cards use them: the database ends with the settings the file's database had. The summary says `Applied`, `Kept` or `Unchanged` (the stored settings already equal the file's); a deck created between plan and apply makes the plan stale.
 
@@ -73,7 +75,7 @@ Any conflict refuses the whole import. Merging content field by field would need
 - A setting is unknown, of the wrong type or out of its range.
 - `media` is not empty.
 
-**Foreign ids are refused, not re-issued (#12).** Re-issuing would need remapping every reference. It would also break the merge rules: the same file imported twice would add everything twice, because its rows would get new ids each time. Every export Rappel writes passes the check. The optional `CHECK` tightening in #12 (a migration) is left for later; today only `IdGen` and this checked import write ids.
+**Foreign ids are refused, not re-issued (#12).** Re-issuing would need remapping every reference (the tag mapping above is the only remap, and it maps onto ids already in the database). It would also break the merge rules: the same file imported twice would add everything twice, because its rows would get new ids each time. Every export Rappel writes passes the check. The optional `CHECK` tightening in #12 (a migration) is left for later; today only `IdGen` and this checked import write ids.
 
 **Apply.**
 1. If nothing is new or revived, apply returns at once. Nothing is written and no backup is made, so importing a file twice is a true no-op.

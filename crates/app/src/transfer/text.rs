@@ -205,9 +205,6 @@ pub(super) fn conflicts_text(
                     }
                 },
                 Conflict::TagDiffers(_) => "A tag has another name in the file".to_owned(),
-                Conflict::TagNameTaken { .. } => {
-                    "The file has another tag with the name of one of yours".to_owned()
-                }
                 Conflict::AlreadyUndone { .. } => {
                     "The file undoes a review or reset that is already undone here".to_owned()
                 }
@@ -528,10 +525,6 @@ mod tests {
     fn conflicts_of_tags_and_undos_have_their_own_lines() {
         let conflicts = [
             Conflict::TagDiffers(OTHER.to_owned()),
-            Conflict::TagNameTaken {
-                tag_id: OTHER.to_owned(),
-                existing_id: DECK.to_owned(),
-            },
             Conflict::AlreadyUndone {
                 event_id: EVENT.to_owned(),
                 existing_id: OTHER.to_owned(),
@@ -540,7 +533,6 @@ mod tests {
         assert_eq!(
             conflicts_text(&conflicts, names, fronts),
             "• A tag has another name in the file\n\
-             • The file has another tag with the name of one of yours\n\
              • The file undoes a review or reset that is already undone here"
         );
     }

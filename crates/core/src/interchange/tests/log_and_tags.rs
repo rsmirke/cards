@@ -221,22 +221,86 @@ fn a_tag_with_another_name_is_a_conflict() {
     ));
 }
 
+/// Two databases that each created "maths" (two ids) merge cleanly: the
+/// file's tag is mapped onto the database's, counted as present, and the
+/// file's cards get the database's tag, with the database's spelling.
 #[test]
-fn a_tag_name_used_by_another_tag_is_a_conflict() {
-    let (source, _, _) = sample_env();
-    let mut target = Env::new();
-    let deck = target.store.create_deck("Other").unwrap().id;
-    let card = target.store.add_card(&deck, "q", "a").unwrap().id;
-    let mine = target.store.add_tag(&card, "ALGEBRA").unwrap();
-    let doc = json_of(&source.export());
-    let plan = target.plan(&source.export()).unwrap();
+fn two_databases_that_each_created_maths_merge_cleanly() {
+    let tagged = |name: &str, tag: &str| {
+        let mut env = Env::new();
+        let deck = env.store.create_deck(name).unwrap().id;
+        let card = env.store.add_card(&deck, name, "a").unwrap().id;
+        let tag = env.store.add_tag(&card, tag).unwrap();
+        (env, card, tag)
+    };
+    let (mut a, a_card, a_tag) = tagged("A", "maths");
+    let (mut b, b_card, b_tag) = tagged("B", "Maths");
+    assert_ne!(a_tag.id, b_tag.id);
+    let (from_a, from_b) = (a.export(), b.export());
+
+    let plan = a.plan(&from_b).unwrap();
+    let summary = plan.summary();
+    assert_eq!(summary.conflicts, []);
     assert_eq!(
-        plan.summary().conflicts,
-        [Conflict::TagNameTaken {
-            tag_id: doc["tags"][0]["id"].as_str().unwrap().to_owned(),
-            existing_id: mine.id,
-        }]
+        (summary.tags, summary.card_tags),
+        (
+            TableCounts {
+                new: 0,
+                present: 1,
+                revived: 0
+            },
+            TableCounts {
+                new: 1,
+                present: 0,
+                revived: 0
+            }
+        )
     );
+    let report = a.store.apply_import_at(&plan, T_EXPORT).unwrap();
+    assert_eq!((report.tags, report.card_tags), (0, 1));
+    assert_eq!(a.store.tags().unwrap(), std::slice::from_ref(&a_tag));
+    assert_eq!(
+        a.store.card_tags(&b_card).unwrap(),
+        std::slice::from_ref(&a_tag)
+    );
+    assert_eq!(
+        a.store.card_tags(&a_card).unwrap(),
+        std::slice::from_ref(&a_tag)
+    );
+
+    // Re-importing changes nothing: the mapped tag and its card tag are
+    // already present.
+    let after = a.export();
+    let again = a.plan(&from_b).unwrap();
+    assert!(again.summary().is_noop());
+    assert_eq!(
+        (again.summary().tags, again.summary().card_tags),
+        (
+            TableCounts {
+                new: 0,
+                present: 1,
+                revived: 0
+            },
+            TableCounts {
+                new: 0,
+                present: 1,
+                revived: 0
+            }
+        )
+    );
+    a.store.apply_import_at(&again, T_EXPORT).unwrap();
+    assert_eq!(a.export(), after);
+
+    // The other way round too, onto B's own tag; then each imports the
+    // other's merged export and nothing changes.
+    b.import(&from_a).unwrap();
+    assert_eq!(b.store.tags().unwrap(), std::slice::from_ref(&b_tag));
+    assert_eq!(
+        b.store.card_tags(&a_card).unwrap(),
+        std::slice::from_ref(&b_tag)
+    );
+    assert!(a.plan(&b.export()).unwrap().summary().is_noop());
+    assert!(b.plan(&a.export()).unwrap().summary().is_noop());
 }
 
 #[test]
@@ -366,9 +430,10 @@ fn a_plan_whose_entry_was_undone_meanwhile_is_stale() {
     assert_eq!(b.export(), before);
 }
 
-/// A tag of the file's name created between plan and apply: stale.
+/// A tag of the file's name created between plan and apply turns a new
+/// tag into a mapped one: the plan is stale.
 #[test]
-fn a_plan_whose_tag_name_was_taken_meanwhile_is_stale() {
+fn a_plan_whose_tag_name_was_created_meanwhile_is_stale() {
     let (source, _, _) = sample_env();
     let mut target = Env::new();
     let deck = target.store.create_deck("Other").unwrap().id;
